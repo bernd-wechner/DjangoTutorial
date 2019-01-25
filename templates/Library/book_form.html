@@ -1,0 +1,8 @@
+<form method="post">{% csrf_token %}
+    {{ form.as_p }}
+    {{ chapters.management_form }}
+	{% for chapter in chapters %}
+	  <p>{{ chapter }}</p>
+	{% endfor %}
+    <input type="submit" value="Save">
+</form>

@@ -1,0 +1,8 @@
+<h1>{{ object.title }} {{ object.name }}</h1>
+<p>Date of Birth: {{ object.birth_date }}</p>
+<p>Books:<br>
+	{% for book in object.books.all %}
+	  {{ book.id }} {{ book.title }}</br>
+	{% endfor %}
+</p>
+<p>Date: {{ now|date }}</p>

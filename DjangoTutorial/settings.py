@@ -109,7 +109,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+#TIME_ZONE = 'UTC'
 
 USE_I18N = True
 
@@ -117,8 +117,10 @@ USE_L10N = True
 
 USE_TZ = True
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/1.11/howto/static-files/
+# This is where manage.py collectstatic will place all the static files
+STATIC_ROOT = os.path.join(BASE_DIR, "static/")
 
-STATIC_URL = '/static/'
+# And this is the URL where static files will be expected by django pages
+STATIC_URL = "/static/"

@@ -24,12 +24,12 @@ class AuthorDelete(DeleteView):
     success_url = reverse_lazy('author-list')
 
 
-class BookCreate(CreateView):
-    model = Book
-    fields = '__all__'
-
-    def get_success_url(self):
-        return reverse('book-detail', kwargs={'pk': self.object.pk})
+# class BookCreate(CreateView):
+#     model = Book
+#     fields = '__all__'
+# 
+#     def get_success_url(self):
+#         return reverse('book-detail', kwargs={'pk': self.object.pk})
 
 # class BookUpdate(UpdateView):
 #     model = Book
@@ -60,7 +60,7 @@ class ArticleForm(ModelForm):
             }
         }
      
-def manage_books(request, author_id):
+def manage_books(request, author_id, type):
     '''
     Based on the manage_books function in the tutorial at: 
         https://docs.djangoproject.com/en/2.1/topics/forms/modelforms/#using-an-inline-formset-in-a-view
@@ -68,8 +68,16 @@ def manage_books(request, author_id):
     author = Author.objects.get(pk=author_id)
 
     print("{} {}: checking parent before save {}={}".format("Author", author.pk, "books", author.books.all()))    
-    
-    BookInlineFormSet = inlineformset_factory(Author, Book, fields="__all__")
+
+    if type == 'lead':    
+        BookInlineFormSet = inlineformset_factory(Author, Book, fields="__all__")
+    else:
+        # Pydev marks Book.authors.through in red warning "Undefined variable from import: through"
+        # But that seems faulty, this runs fine. TODO: What is wrong with pydev that it can't see the
+        # through property yet I can break here, and examon Book.authors.through and see it exists and 
+        # is ModelBase: <class 'Library.models.Book_authors'> 
+        BookInlineFormSet = inlineformset_factory(Author, Book.authors.through, fields="__all__")
+        
     if request.method == "POST":
         print("Submitted:")
         for (key, val) in request.POST.items():

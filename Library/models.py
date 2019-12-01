@@ -1,4 +1,7 @@
 from django.db import models
+from django.utils import timezone
+#from django_model_admin_fields import AdminModel
+from django.core.exceptions import ValidationError, NON_FIELD_ERRORS
 
 # Note: I am trying to replicate this structure I have in my CoGs project:
 #
@@ -83,11 +86,38 @@ class Author(models.Model):
         return self.name
 
 class Book(models.Model):
-    title = models.CharField(max_length=100)
-    author = models.ForeignKey(Author, on_delete=models.CASCADE, related_name="books")
+    title = models.CharField(max_length=100) 
+    authors = models.ManyToManyField(Author, related_name="books")
+    lead_author = models.ForeignKey(Author, on_delete=models.CASCADE)
+    
+    def clean(self):
+        if (self.id is None):
+            # Validate all the model fields that are not One2Many or Many2Many
+            pass
+        else:
+            # Validate all the One2Many or Many2Many fields
+            errors = {"title": ["Title is bad", "No not really"], "authors": ["But authors are", "Nah, kidding you again"], NON_FIELD_ERRORS: ["One error", "Two errors"]}
+            raise ValidationError(errors)            
+
+    def __str__(self):
+        return self.title
+    
+    class Meta():
+        ordering = ['pk']    
 
 class Chapter(models.Model):
     title = models.CharField(max_length=100)
     book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name="chapters")
     author = models.ForeignKey(Author, on_delete=models.CASCADE, related_name="chapters")
+
+    def __str__(self):
+        return self.title
+
+class Event(models.Model):
+    title = models.CharField(max_length=100)
+    venue = models.CharField(max_length=100)
+    creator = models.CharField(max_length=100)
+    date_time = models.DateTimeField(default=timezone.now)
     
+    def __str__(self):
+        return self.title

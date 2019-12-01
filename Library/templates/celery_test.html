@@ -1,0 +1,17 @@
+<html>
+<head>
+	{% load staticfiles %}
+	<title>CELERY TEST</title>
+	<script src="{% static 'progress_bar.js' %}"></script>
+</head>
+<body>
+	<H1>A Simple Celery Progress Bar Test</H1>
+	
+	<button onclick='ProgressBar.initProgressBar("{% url 'celery-progress' %}");'>Run</button>
+	
+	<div id="celery-result"></div>
+	<div id='progress-bar'>&nbsp;</div>
+	<div id='progress-bar-message'></div>
+</body>
+	
+	

@@ -1,8 +1,33 @@
-<form method="post">{% csrf_token %}
-    {{ form.as_p }}
-    {{ chapters.management_form }}
-	{% for chapter in chapters %}
-	  <p>{{ chapter }}</p>
-	{% endfor %}
+<p>A book has a standard text field (<b>Title</b>) and three types of relationship to demonstrate:</p>
+
+<ol>
+	<li>A Many To Many relationship in <b>Authors</b></li>
+	<li>A Many To One relationship in <b>Lead Author</b></li>
+	<li>A One To Many relationship in <b>Chapters</b></li>
+</ol>
+
+<form method="post">
+	{% csrf_token %}
+    {% if form.errors %}
+        <p style="color: red;">
+            Please correct the error{{ form.errors|pluralize }} below.
+        </p>
+    {% endif %}	
+    
+	{{ chapters.management_form }}
+	
+    <table>
+    {{ form.as_table }}    
+	<tr>
+		<th valign=top>Chapters:</th>
+		<td nowrap><table>
+				{% for chapter in chapters %}
+				  {{ chapter.as_table }}
+				{% endfor %}
+			</table>
+		</td>
+	</tr>
+    </table>
+	
     <input type="submit" value="Save">
 </form>

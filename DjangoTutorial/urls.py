@@ -23,8 +23,9 @@ urlpatterns = [
 
     path('timetest/', TimeTestView, name='time-test'),
     path('celerytest/', CeleryTestView, name='celery-test'),
-    path('celerytest2/', CeleryTestView2.as_view(), name='celery-test2'),
-    path('celeryprogress/', Start_Cancel_Or_GetProgress, name='celery-progress'),
+    
+    path('test/<task>/', CeleryTestView2.as_view(), name='task-test'),
+    path('progress/<task>', Start_Cancel_Or_GetProgress, name='task-progress'),
     
     path('article/<slug:slug>/', ArticleDetailView.as_view(), name='article-detail'),
     path('article/', ArticleListView.as_view(), name='article-list'),

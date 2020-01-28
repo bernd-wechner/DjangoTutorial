@@ -481,11 +481,12 @@ def TimeTestView(request):
     
     return HttpResponse(html)
 
-from .celery import debug_task, debug_task2, instruction_queue_name, app as celery_app
+from .celery import debug_task, debug_task2, Interactive, app as celery_app
 from celery import app
 from celery.result import AsyncResult
 from celery.contrib.abortable import AbortableAsyncResult
 from kombu import Connection, Exchange, Queue
+
 def CeleryTestView(request):
     '''
     A simple view to test Celery task creation. The task shoudl be defined in tasks.py in same directory as this
@@ -504,11 +505,19 @@ def CeleryTestView(request):
     
     return HttpResponse("Cool")
 
+from .interactive import Interactive
+
 class CeleryTestView2(TemplateView):
     template_name = 'celery_test.html'
+    def dispatch(self, request, *args, **kwargs):
+        self.task = kwargs.get('task', "none")
+        return super().dispatch(request, *args, **kwargs)    
 
+@Interactive.Pulse
+def Start_Cancel_Or_GetProgress(request, task):
+    pass
         
-def Start_Cancel_Or_GetProgress(request):
+def Start_Cancel_Or_GetProgressOLD(request):
     # The celery-progress Javascript collpases initProgressBar and and updateProgress into oen idea
     # That struck me as odd, as we want to kick start a process as distinct from asking what its 
     # progress is. But it occurs to me that if we keep a record of running processes somehow, then 
@@ -557,10 +566,10 @@ def Start_Cancel_Or_GetProgress(request):
             #celery_app.control.broadcast('abort', arguments= {'task_id': task_id})
             print(f'Connecting to: {celery_app.conf.broker_write_url}')
             with Connection(celery_app.conf.broker_write_url) as conn:
-                q = conn.SimpleQueue(instruction_queue_name(task_id))
+                q = conn.SimpleQueue(Interactive.queue_name(task_id))
                 instruction = 'abort'
                 q.put(instruction)
-                print(f'Sent: {instruction} to {instruction_queue_name(task_id)}')
+                print(f'Sent: {instruction} to {Interactive.queue_name(task_id)}')
 
 #                 try:                
 #                     print(f'Checking queue for already sent {instruction}: queue: {instruction_queue_name(task_id)}')

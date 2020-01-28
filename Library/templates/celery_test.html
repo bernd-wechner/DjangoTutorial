@@ -6,7 +6,7 @@
 </head>
 <body>
 	<H1>A Simple Celery Progress Bar Test</H1>
-	
+
 	<button onclick='PB.start();'>Run</button>
 	<button onclick='PB.cancel();'>Cancel</button>
 	
@@ -15,4 +15,4 @@
 	<div id='progress-bar-message'></div>
 </body>
 	
-<script>PB = new ProgressBar("{% url 'celery-progress' %}")</script>	
+<script>PB = new ProgressBar("{% url 'task-progress' view.task %}")</script>	

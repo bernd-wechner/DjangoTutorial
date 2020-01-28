@@ -82,7 +82,7 @@ class ProgressBar {
         Binder.bind(this, ProgressBar)
     }
     
-    start() { this.cancelTask = false; this.pollURL(); }
+    start() { this.cancelTask = false; this.resultElement.innerHTML = ""; this.progressBarMessageElement.innerHTML = ""; this.pollURL(); }
     cancel() { this.cancelTask = true; }
 
     got_data(data) {

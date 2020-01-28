@@ -2,7 +2,7 @@ from django.urls import include, path
 from django.contrib import admin
 from django.conf import settings
 from django.conf.urls.static import static
-from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView, CeleryTestView2, StartOrGetProgress
+from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView, CeleryTestView2, Start_Cancel_Or_GetProgress
 from Library.forms import AuthorCreate, AuthorDelete, AuthorUpdate, BookDelete, manage_books  
 
 urlpatterns = [
@@ -24,7 +24,7 @@ urlpatterns = [
     path('timetest/', TimeTestView, name='time-test'),
     path('celerytest/', CeleryTestView, name='celery-test'),
     path('celerytest2/', CeleryTestView2.as_view(), name='celery-test2'),
-    path('celeryprogress/', StartOrGetProgress, name='celery-progress'),
+    path('celeryprogress/', Start_Cancel_Or_GetProgress, name='celery-progress'),
     
     path('article/<slug:slug>/', ArticleDetailView.as_view(), name='article-detail'),
     path('article/', ArticleListView.as_view(), name='article-list'),

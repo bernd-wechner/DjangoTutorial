@@ -124,3 +124,19 @@ STATIC_ROOT = os.path.join(BASE_DIR, "static/")
 
 # And this is the URL where static files will be expected by django pages
 STATIC_URL = "/static/"
+
+# Provided extended results from Celery tasks
+#
+# Documented as:
+#
+# Enables extended task result attributes 
+# (name, args, kwargs, worker, retries, queue, delivery_info) 
+# to be written to backend.
+#
+# Docs are unclear on case. I have instrumented Celery core and proven that this doesn't stick:
+#
+# CELERY_result_extended = True
+#
+# And this does:
+
+CELERY_RESULT_EXTENDED = True

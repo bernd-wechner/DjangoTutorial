@@ -481,7 +481,7 @@ def TimeTestView(request):
     
     return HttpResponse(html)
 
-from .celery import debug_task, debug_task2, Interactive, app as celery_app
+from .celery import debug_task, debug_task2, app as celery_app
 from celery import app
 from celery.result import AsyncResult
 from celery.contrib.abortable import AbortableAsyncResult
@@ -505,137 +505,10 @@ def CeleryTestView(request):
     
     return HttpResponse("Cool")
 
-from .interactive import Interactive
 
 class CeleryTestView2(TemplateView):
     template_name = 'celery_test.html'
     def dispatch(self, request, *args, **kwargs):
-        self.task = kwargs.get('task', "none")
+        '''Makes view.task available in the template context'''
+        self.task = kwargs.get('task_name', "none")
         return super().dispatch(request, *args, **kwargs)    
-
-@Interactive.Pulse
-def Start_Cancel_Or_GetProgress(request, task):
-    pass
-        
-def Start_Cancel_Or_GetProgressOLD(request):
-    # The celery-progress Javascript collpases initProgressBar and and updateProgress into oen idea
-    # That struck me as odd, as we want to kick start a process as distinct from asking what its 
-    # progress is. But it occurs to me that if we keep a record of running processes somehow, then 
-    # we know if the process is already kick started or not, and this can fall onto the shoulders of
-    # one function.
-    #
-    # Celery of course knows what ptasks are running and we could ask it if this task is running, so
-    # we'd only need some waht of comparig a requested task with a running task.
-    
-    # True if Id is in the get params and the Id is a running task!
-    task_id = getattr(request,"GET", {}).get("task_id", None)
-
-    print(f'\nStart_Cancel_Or_GetProgress: task_id is {task_id}')
-
-    if task_id:
-        print(f"Fetching id from session")
-        task_id = request.session["task_id"]
-        print(f"Fetching tasks result for task: {task_id}")
-        
-        r =  AsyncResult(task_id)
-        print(f"Got result: {r.state}, {r.info}")
-
-        # Experiment with Extended Results
-#         extended_results = ('name', 'args', 'kwargs', 'worker', 'retries', 'queue', 'delivery_info')
-#         setting = "result_extended"
-#         print(f"DEBUG: {setting} = {r.app.conf[setting]}")
-#         for er in extended_results:
-#             print(f"\tExtended Result: {er}: {getattr(r, er, 'not set')}")
-
-        # r.state is a string and constrained to be:
-        # "PENDING" - The task is waiting for execution.
-        # "STARTED" - The task has been started.
-        # "RETRY" - The task is to be retried, possibly because of failure.
-        # "FAILURE" - The task raised an exception, or has exceeded the retry limit.  The result attribute then contains the exception raised by the task.
-        # "SUCCESS" - The task executed successfully. The result attribute then contains the tasks return value.
-        #
-        # Custom states introduced here:
-        # "PROGRESS" - The task is running
-        # "ABORTED" - The task was cancelled 
-        #
-        # See: https://docs.celeryproject.org/en/latest/reference/celery.result.html
-        #      https://www.distributedpython.com/2018/09/28/celery-task-states/      
-
-        abort = "cancel" in getattr(request,"GET", {})
-        if abort:
-            #celery_app.control.broadcast('abort', arguments= {'task_id': task_id})
-            print(f'Connecting to: {celery_app.conf.broker_write_url}')
-            with Connection(celery_app.conf.broker_write_url) as conn:
-                q = conn.SimpleQueue(Interactive.queue_name(task_id))
-                instruction = 'abort'
-                q.put(instruction)
-                print(f'Sent: {instruction} to {Interactive.queue_name(task_id)}')
-
-#                 try:                
-#                     print(f'Checking queue for already sent {instruction}: queue: {instruction_queue_name(task_id)}')
-#                     last_instruction = q.get_nowait().payload
-#                     # We never ack() the message we read, we leave it on the queue!
-#                     # ack() removes it from the queue, only task should do that, we're
-#                     # just sniffing it now so we don't queue the same instruction multiple 
-#                     # times  
-#                 except q.Empty:
-#                     last_instruction = None
-#                     
-#                 print(f'Last instruction: {last_instruction}')
-#                 if not last_instruction == instruction:
-#                     q.put(instruction)
-#                     print(f'Sent: {instruction} to {instruction_queue_name(task_id)}')
-                    
-                q.close()
-
-        state = r.state
-        if (state == "PENDING"):
-            # We get this back if celery wasn't running nay workers for example
-            # So we need to sensibly provide feedback here if that happens. Easy
-            # to test as we just run tthe web site but not celery and start the task
-            # it will come back as pending. 
-            # TODO: implement default handling in progress.js 
-            print("Task is PENDING")
-            progress = {'percent':0, 'current':0, 'total':0, 'description': ""}
-            result = None
-        elif (state == "PROGRESS"):
-            progress = r.info['progress']
-            result = None
-        elif (state == "ABORTED"):
-            progress = r.info['progress']
-            result = r.info['result'] 
-        elif (state == "SUCCESS"):
-            progress = {'percent':100, 'current':100, 'total':100, 'description': "Done!"}
-            result = r.result
-            
-        print(f"RESULT: {result}")
-    else:
-        print("About to start debug task")
-        async_result = debug_task2.delay()
-        print("Kick started the debug task")
-        task_id = async_result.task_id
-        print(f"Got task id: {task_id}")
-        request.session["task_id"] = task_id 
-        print(f"Stowed id in session")
-        state = "STARTED"
-        progress = {'percent':0, 'current':0, 'total':0, 'description': ""}
-        result = None
-
-    # ProgressBar expects:
-    # id - if the task is running
-    # progress - a dict containing percent, current, total and description
-    # complete - a bool, true when done
-    # success - a bool, false on error, else true
-    # cancelled - a bool, true when cancelled  
-    # result - the result of the tast if complete and success
-    
-    if (state == "STARTED" or state == "PROGRESS"):        
-        response = {'id': task_id, 'progress': progress}
-    elif (state == "ABORTED"):
-        response = {'id': task_id, 'canceled': True, 'result': result}
-    elif (state == "PENDING"):
-        response = {'id': task_id, 'result': 'PENDING', 'complete': True, 'success': False}
-    else:
-        response = {'id': task_id, 'result': str(result), 'complete': True, 'success': True}
-     
-    return HttpResponse(json.dumps(response))

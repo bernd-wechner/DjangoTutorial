@@ -37,24 +37,27 @@ def debug_task(self):
 # Tasks run in a child process of the worker process
 # A task being bound means the first argument to the task will always be the task 
 # instance (self), just like Python bound methods:
-from .interactive import Interactive
+from celery_interactive import Interactive, Connected
 
-@app.task(bind=True)
-@Interactive.Task
-def debug_task2(self, q):
+@app.task(bind=True, base=Interactive)
+@Connected
+def debug_task2(self):
     n = 10
-    logger.info(f'XDEBUG self dir {dir(self)}')
     for i in range(n):
         logger.info(f'XDEBUG debug_task2, Working... {i+1} of {n}')
         
-        # Attach some attributes to the task instance that help with the check.
-        self.interactive = {'i':i, 'n':n, 'q':q}
-        # Willr aise an Abort error after setting state to 'ABORTED'
-        Interactive.check_abort(self)
+        #progress = {'percent':100*(i+1)/n, 'current':i+1, 'total': n, 'description': f"Description number {i+1}"}
+        progress = self.progress(100*(i+1)/n, i+1, n, f"Description number {i+1}")
+
+        self.update_state(state="PROGRESS", meta={'progress': progress})
+
+        # Will raise an Abort error after setting state to 'ABORTED'
+        instruction = self.check_abort()
         
-        self.update_state(state="PROGRESS", meta={'progress': {'percent':100*(i+1)/n, 'current':i+1, 'total': n, 'description': f"Description number {i+1}"}})
-        time.sleep(1)    
+        time.sleep(1) 
     
+#     logger.info(f'XDEBUG debug_task2, Sleeping for an hour')
+#     time.sleep(60*60)
     # This implicitly sets state to SUCCESS
     return 'final result'
 

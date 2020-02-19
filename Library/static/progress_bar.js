@@ -79,13 +79,28 @@ class ProgressBar {
         
         this.pollInterval = options.pollInterval || 500;
         
+        this.timerID = null;
+        
         Binder.bind(this, ProgressBar)
     }
     
-    start() { this.cancelTask = false; this.resultElement.innerHTML = ""; this.progressBarMessageElement.innerHTML = ""; this.pollURL(); }
-    cancel() { this.cancelTask = true; }
+    start() { 
+    	this.cancelTask = false; 
+    	this.instruction = null; 
+    	this.resultElement.innerHTML = ""; 
+    	this.progressBarMessageElement.innerHTML = ""; 
+    	this.pollURL(); 
+    }
+    
+    // These requests will be sent when the next pollURL fires (next time pollInterval elapses)
+    // if pollURL is called explicitly weird stuff happens because we set off another setTimeout
+    // chain of call backs.
+    cancel() { this.cancelTask = true; this.pollURL(); }
+    instruct(ielement) { this.instruction = document.getElementById(ielement).value; this.pollURL(); }
 
     got_data(data) {
+    	console.log("Got Data Back: " + JSON.stringify(data));
+    	
     	// If the AJAX call to taskProgressUrl returns an id, remember it
     	if (data.id) this.taskId = data.id;
 
@@ -94,6 +109,9 @@ class ProgressBar {
         }
     	
         if (data.complete || data.canceled) {
+        	clearTimeout(this.timerID);
+        	
+        	console.log("Completed: " + data.complete + "  Canceled: " + data.canceled);
             if (data.canceled)
             	this.onCancel(this.progressBarElement, this.progressBarMessageElement);
             else if (data.success)
@@ -106,19 +124,22 @@ class ProgressBar {
             
             if (data.result)
             	this.onResult(this.resultElement, data.result);
+        }
+        else if (data.instructed) {
+        	clearTimeout(this.timerID);
+        	console.log("Instructed: " + data.instructed);
         } else {
-        	// setTimeout is vanilla JS and runs updateProgress after pollInterval
+        	// setTimeout is vanilla JS and calls pollURL after pollInterval
         	// setTimeout(function, milliseconds, param1, param2, ...)
         	// where param's are passed to function
         	// This recurses of course but setTiemout schedules the call to
-        	// updateProgress in the global context later, so doesn't add to
+        	// pollURL in the global context later, so doesn't add to
         	// the stack.
-            setTimeout(this.pollURL, this.pollInterval);
+            this.timerID = setTimeout(this.pollURL, this.pollInterval);
         }
     }
 
     got_response(response) {
-    	console.log(response);
         response.json().then(this.got_data);
     }
 
@@ -138,7 +159,8 @@ class ProgressBar {
         // a cancel request then we should pass it on to the server.
         const taskProgressUrl = this.progressUrl 
         			          + (this.taskId     ? "?task_id=" + this.taskId : "") 
-        			          + (this.cancelTask ? "&cancel" : "");
+        			          + (this.cancelTask ? "&cancel" : "")
+        			          + (this.instruction ? "&instruction=" + this.instruction : "");
         			          
         // Cancel the task only once (i.e. if this.cancelTask was true we now have
         // cancel in the URL, but rest this.CancelTask so we don't keep requesting 
@@ -146,6 +168,15 @@ class ProgressBar {
         // it cancelled the task. 
         this.cancelTask = false;  
         
+        // Send an instruction only once if suppplied.
+        this.instruction = null
+        
+		if (taskProgressUrl == this.progressUrl) {
+			console.log("Fetching: " + taskProgressUrl);
+			var stophere 
+			stophere = 1;
+		}
+		
         fetch(taskProgressUrl).then(this.got_response);        
     }
 };

@@ -37,10 +37,10 @@ def debug_task(self):
 # Tasks run in a child process of the worker process
 # A task being bound means the first argument to the task will always be the task 
 # instance (self), just like Python bound methods:
-from celery_interactive import Interactive, Connected
+from celery_interactive import Interactive
 
 @app.task(bind=True, base=Interactive)
-@Connected
+@Interactive.Connected
 def debug_task2(self):
     n = 10
     for i in range(n):
@@ -52,7 +52,10 @@ def debug_task2(self):
         self.update_state(state="PROGRESS", meta={'progress': progress})
 
         # Will raise an Abort error after setting state to 'ABORTED'
-        instruction = self.check_abort()
+        instruction = self.check_for_abort()
+
+        if instruction:
+            logger.info(f'XDEBUG debug_task2, Instructed to: "{instruction}"')
         
         time.sleep(1) 
     

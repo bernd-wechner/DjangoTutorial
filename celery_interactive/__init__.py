@@ -4,13 +4,14 @@
 Interactive tasks overview
 ==========================
 
-A slightly tangled web of decorators and Task extensions that provides 
-an broker derived queue for communication between a Client and a running
-Task.
+A slightly tangled web of decorators, a Task extension and 
+support functions that provides a celery broker-derived queue 
+for communication between a client (typically the Boss) and a 
+running Task.
 
-Classic application is to request a task to abort execution. But more general
-instructions can easily be sent, as long as they have responses implemented 
-in the task itself. 
+Classic application is to request a task to abort execution. 
+But more general instructions can easily be sent, as long as 
+they have responses implemented in the task itself. 
 
 Interactive is a class based on cleery.Task and best used in a task
 decorator akin to:
@@ -19,11 +20,27 @@ decorator akin to:
     def my_task_function(self):
         pass
     
-Alwasy use bind=True, so that the task receives an instance of itself 
+Always use bind=True, so that the task receives an instance of itself 
 in the first argument (self).
 
-base-Interactive, means the task will have the methods defined here-in.
+"base=Interactive", means the task will have the methods defined 
+here-in. Of note for example:
 
+self.abort(task_id)
+    requests that the task be aborted. Sends a message to the queue
+    that the task will ned to be checking if it's going to respond 
+    to teh request. It needs the task_id because this specifies the 
+    specific running instance of the task (there could conceivably 
+    be many).
+    
+self.check_for_instruction()
+    Will quietly check the queue for an instruction and return it 
+    if there else, None.
+
+self.check_for_abort()
+    wraps self.check_for_instruction(), but if the message received 
+    is "abort" will raise self.Abort to abort the task and if it's 
+    not will just return the instruction. 
  
 
 """
@@ -39,6 +56,240 @@ from django.http.response import HttpResponse
 from dal.forward import Self
 
 logger = get_logger(__name__)
+
+def get_task(name):
+    '''
+    Given the name of task will return an instance of a task of that name
+    provided it's been registered with Celery and the name identifies a 
+    unique task.  
+     
+    :param name: The name fo the task desired.
+    '''
+    print()
+    r = re.compile(fr"\.{name}$")
+    task_fullnames = list(filter(r.search, list(current_app.tasks.keys())))
+    assert len(task_fullnames) == 1, f"check_task_and_respond must have an unambiguous task to start. Provided: {name}, Found: {task_fullnames}."
+    task = current_app.tasks[task_fullnames[0]]
+    return task
+
+def Connected(task_function):
+    '''
+    A decorator to wrap a Celery task in a connection for interacting with
+    the task. The task is provided with a SimpleQueue that it can read for
+    messages from a Producer (that wants to communicate with this task).
+    
+    It is stored in the attribute q and the code in the task function
+    can access self.q if needed. But if the task is decorated with
+    base=Interactive, then the task will have the functions:
+    
+        self.abort()
+        self.check_for_instruction()
+        self.check_for_abort()
+        
+    among others that Interactive provides,.
+     
+    :param task_function: A function that implements a Celery task
+    '''
+    def connected(task):
+        '''
+        A wrapper around a Celery task function that puts it inside
+        a Connection hased on the broker read URL and providing a 
+        SimpleQueue called q to the task on which it looks for 
+        messages from someone (possibly a Pulse wrapped Django view) 
+        
+        :param task:
+        '''
+        my_id = task.request.id
+
+        try:
+            logger.info(f'Connecting to: {current_app.conf.broker_read_url}')
+            with Connection(current_app.conf.broker_read_url) as conn:
+                logger.info(f'Getting queue name')
+                name = task.queue_name(my_id)
+                logger.info(f'Got queue name: {name}')
+                q = conn.SimpleQueue(name)
+                q.name = name
+                task.q = q
+                result = task_function(task)
+        except Ignore:
+            # Trikcle the Celery Ignore exception upwards
+            q.close()
+            raise Ignore() 
+        except Exception as e:
+            logger.info(f'ERROR: {e}')
+            task.update_state(state="FAILURE", meta={'result': 'result to date', 'reason': str(e)})
+            q.close()
+
+        return result
+    
+    # Preserver the name of the task function so we can look it up 
+    connected.__name__ = task_function.__name__
+    return connected
+
+def Django_PulseCheck(view_function):
+    '''
+    A decorator that wraps a django view function making it a useful
+    pulse to check at intervals. This means essentially it will:
+    
+    Given a http request that contains a `task_id` in the GET or POST 
+    params will check status on it returning a progress indication if it 
+    provides one, and if `cancel` is supplied as a GET or POST parameter 
+    will request the task abort.
+        
+    :param view_function: a Django view function that we will decorate
+    '''
+    
+    def check_task_and_respond(request, task_name):
+        '''
+        Replaces a django view function that has the same signature.
+        
+        Requires either a task_name (to start) or the task_id (of an already 
+        started task) in request. Optionally the `cancel` keyword in the request 
+        if a task_id is provided will ask that task to abort and the 'instruction'
+        keyword in the request can request we instruct the task as suggested. 
+
+        :param request: An HTTM request which optionally profives `task_id` and `abort`
+        :param task: A string that identifies a registered celery task. If provided
+                     will check status of the task and respond as needed. If not 
+                     provided will start the task. 
+        
+        '''
+        task = get_task(task_name)
+        task_id = Interactive.get_request_param(request, "task_id")
+        instruction = Interactive.get_request_param(request, "instruction")
+        abort = not Interactive.get_request_param(request, "cancel") is None
+        
+        # The name of a session key in which to store the count of steps the task reports.
+        # Every time we receive a PROGRESS report it will contain a "total" number of steps.
+        # it's nice to know that when the task is completed successfully, but Celery Tasks 
+        # don't report progress metadata on completion. So we just keep the latest value in
+        # session store so we have a sesnible figure to report when the task is completed. 
+        total_store = f"task_{task_name}_{task_id}_total_steps"
+    
+        print(f'\ncheck_task_and_respond: task {task_name} with id {task_id}. abort = {abort}')
+    
+        if task:
+            if not task_id:
+                # Start the task
+                print("About to start debug task")
+                r = task.delay()
+                print("Kick started the debug task")
+                task_id = r.task_id
+                state = r.state # "STARTED"
+                print(f"Got task id: {task_id}, state: {state}")
+                progress = task.progress()
+                result = None
+            else:
+                # Check pulse of the task
+                
+                # r.state is a string and constrained to be:
+                # "PENDING" - The task is waiting for execution.
+                # "STARTED" - The task has been started.
+                # "RETRY" - The task is to be retried, possibly because of failure.
+                # "FAILURE" - The task raised an exception, or has exceeded the retry limit.  The result attribute then contains the exception raised by the task.
+                # "SUCCESS" - The task executed successfully. The result attribute then contains the tasks return value.
+                #
+                # Custom states introduced here:
+                # "PROGRESS" - The task is running
+                # "ABORTED" - The task was cancelled 
+                #
+                # See: https://docs.celeryproject.org/en/latest/reference/celery.result.html
+                #      https://www.distributedpython.com/2018/09/28/celery-task-states/      
+
+                if instruction:
+                    task.instruct(task_id, instruction)
+                            
+                if abort:
+                    task.abort(task_id)
+    
+                print(f"Fetching tasks result for task: {task_id}")
+                r =  AsyncResult(task_id)
+                print(f"Got result: {r.state}, {r.info}")
+        
+                state = r.state
+                if (state == "PENDING"):
+                    # We get this back if celery wasn't running nay workers for example
+                    # So we need to sensibly provide feedback here if that happens. Easy
+                    # to test as we just run tthe web site but not celery and start the task
+                    # it will come back as pending. 
+                    # TODO: implement default handling in progress.js 
+                    print("Task is PENDING")
+                    progress = task.progress()
+                    result = None
+                elif (state == "PROGRESS"):
+                    progress = r.info['progress']
+                    result = None
+                elif (state == "ABORTED"):
+                    progress = r.info['progress']
+                    result = r.info['result'] 
+                elif (state == "SUCCESS"):
+                    steps = request.session.pop(total_store, 0)
+                    progress = task.progress(100, steps, steps, "Done")
+                    result = r.result
+                    
+                print(f"STATE: {state}, RESULT: {result}, PROGRESS: {progress}")
+    
+        # ProgressBar expects:
+        #
+        # id - if the task is running
+        # progress - a dict containing percent, current, total and description
+        # complete - a bool, true when done
+        # success - a bool, false on error, else true
+        # canceled - a bool, true when canceled  
+        # result - the result of the tast if complete and success
+        #
+        # We reserve all the keys in the response. 
+        reserved = ["id", "progress", "complete", "success", "canceled", "result"]
+        
+        if (state == "PENDING" or state == "STARTED" or state == "PROGRESS"):        
+            response = {'id': task_id, 'progress': progress}
+            request.session[total_store] = progress.get("total", 0) 
+        elif (state == "ABORTED"):
+            response = {'id': task_id, 'canceled': True, 'result': result}
+        else:
+            response = {'id': task_id, 'result': str(result), 'complete': True, 'success': True}
+
+        if instruction:
+            response["instructed"] = instruction
+         
+        # Call the deocrated view function and if it returns a dict 
+        # complement our response with what it provides, but don't 
+        # let it clobber (override) existing values unless it 
+        # specifically asks to.
+        result = view_function(request, task_name)
+        if isinstance(result, dict):
+            clobber = result.pop("__overwrite__", False)
+                
+            for k,v in result.items():
+                if clobber or not k in reserved:
+                    response[k] = v
+         
+        # Return the dictionary as JSON string (intended to be used 
+        # in Javascript at the client side, to drive a progress bar
+        # and/or other feedback) 
+        return HttpResponse(json.dumps(response))
+            
+    return check_task_and_respond
+
+@Django_PulseCheck
+def Django_AJAX_progress(request, task_name):
+    pass
+
+def Django_Instruct(request, task_name):
+    '''
+    A basic Django view function that will take a task_name, and provided 
+    a task_id and instruction are provided in the request will send that 
+    instruction to the identified task.
+     
+    :param request:
+    :param task_name:
+    '''
+    task = get_task(task_name)
+    task_id = Interactive.get_request_param(request, "task_id")
+    instruction = Interactive.get_request_param(request, "instruction")
+    
+    if task and not task_id is None and not instruction is None:
+        task.instruct(task_id, instruction)
 
 class Interactive(Task):
     '''
@@ -165,6 +416,15 @@ class Interactive(Task):
     
     _progress = None
     
+    # Include decorators and view functions as class attributes
+    # permitting easy access though import of Interactive alone.
+    Connected = Connected
+    
+    class Django:
+        PulseCheck = Django_PulseCheck
+        Progress = Django_AJAX_progress
+        Instruct = Django_Instruct
+    
     class Abort(Ignore):
         """A task can raise this to Abort execution.
         
@@ -196,10 +456,10 @@ class Interactive(Task):
         
         return self._progress 
     
-    def abort(self, task_id):
+    def instruct(self, task_id, instruction):
         '''
         Given an instance of celery.Task (self) and a specific task_id will send
-        an abort request to the task of that id.
+        an instruction to the task of that id.
         
         To do so we open a kombu simple queue on the connection:
         
@@ -210,240 +470,81 @@ class Interactive(Task):
      
         :param self: An instance of of this class
         :param task_id: The unique id of the task we are asking to abort
+        :param instruction: The instruction to send (a string is ideal but kombu has to be able to serialize it)
         '''
         print(f'Connecting to: {current_app.conf.broker_write_url}')
         with Connection(current_app.conf.broker_write_url) as conn:
             q = conn.SimpleQueue(self.queue_name(task_id))
-            instruction = 'abort'
             q.put(instruction)
             print(f'Sent: {instruction} to {self.queue_name(task_id)}')
             q.close()
-    
-    def check_abort(self, progress=None): 
+
+    def abort(self, task_id):
         '''
-        Given an instance of celery.Task (self) and optionally a progress indicator,
-        will checkif th task has an associates message queue in self.q, and if so,
-        check if a message is there. If not will simply return None, else if the 
-        message payload requests an abort it will request an abort, else it will 
-        return the message payload as an instruction to the caller.
-         
-        :param self: An instance of Interactive
-        :param progress: a progress indicator in form of self.progress()
-        '''
-        aborted = False
-        if not progress:
-            progress = self._progress
+        Given an instance of celery.Task (self) and a specific task_id will send
+        an abort request to the task of that id.
         
+        :param self: An instance of of this class
+        :param task_id: The unique id of the task we are asking to abort
+        '''
+        self.instruct(task_id, 'abort')
+           
+    def check_for_instruction(self):
+        '''
+        Checks if a Producer has left an instruction for this task.
+
+        Will check if this task has an associates message queue 
+        in self.q, and if so, check if a message is there. If not 
+        will simply return None, else returens the message payload.
+        '''
         q = getattr(self, 'q', None)
         assert isinstance(q, SimpleQueue),  "A SimpleQueue must be provided via self.q to check for abort messages."
         #name = q.name
-        
+
         try:
             message = q.get_nowait()            # Raises an Empty exception if the Queue is empty
             
             instruction = message.payload       # get an instruction if available
-            aborted = instruction == 'abort'    # Was the message an abort instruction?
             message.ack()                       # remove message from queue
             q.close()
-            
-            if aborted:
-                progress['description'] = f"Aborted"
-                self.update_state(state="ABORTED", meta={'result': 'unfinished result', 'progress': progress})
-                raise Interactive.Abort
-            else:
-                return instruction
+            return instruction
         
         except q.Empty:
             return None
 
-def Connected(task_function):
-    '''
-    A decorator to wrap a Celery task in a connection for interacting with
-    the task. The task is provided with a SimpleQueue that it can read for
-    messages from the Producer (that wants to communicate with this task).
-    
-    It is stored in the attribute q and the code in the task function
-    can access self.q if needed. But if the task is decorated with
-    base=Interactive, then the task will have the function:
-    
-        self.check_abort()
-        
-    ehcih will check self.q for abort messages.
-    
-     
-    :param task_function: A function that implements a Celery task
-    '''
-    def connected(task):
+    def check_for_abort(self, progress=None): 
         '''
-        A wrapper around a Celery task function that puts it inside
-        a Connection hased on the broker read URL and providing a 
-        SimpleQueue called q to the task on which it looks for 
-        messages from someone (possibly a Pulse wrapped Django view) 
-        
-        :param task:
-        '''
-        my_id = task.request.id
-
-        try:
-            logger.info(f'Connecting to: {current_app.conf.broker_read_url}')
-            with Connection(current_app.conf.broker_read_url) as conn:
-                logger.info(f'Getting queue name')
-                name = task.queue_name(my_id)
-                logger.info(f'Got queue name: {name}')
-                q = conn.SimpleQueue(name)
-                q.name = name
-                task.q = q
-                result = task_function(task)
-        except Ignore:
-            # Trikcle the Celery Ignore exception upwards
-            q.close()
-            raise Ignore() 
-        except Exception as e:
-            logger.info(f'ERROR: {e}')
-            task.update_state(state="FAILURE", meta={'result': 'result to date', 'reason': str(e)})
-            q.close()
-
-        return result
-    
-    # Preserver the name of the task function so we can look it up 
-    connected.__name__ = task_function.__name__
-    return connected
-
-def DjangoPulseCheck(view_function):
-    '''
-    A decorator that wraps a django view function making it a useful
-    pulse to check at intervals. This means essentially it will:
-    
-    Given a http request that contains a `task_id` will check status 
-    on it returning a progress indication if it provides one, and if
-    `cancel` is supplies will request the task abort.
-        
-    :param view_function: a Django view function that we will decorate
-    '''
-    def get_task(name):
-        '''
-        Given the name of task will return an instance of a task of that name
-        provided it's been registered with Celery and the name identifies a 
-        unique task.  
+        Checks ofr an instruction and if it's an abort instruction will 
+        abort the task (by raising self.Abort) else will just return the
+        instruction. 
          
-        :param name: The name fo the task desired.
+        :param progress: a progress indicator in form of self.progress()
         '''
-        print()
-        r = re.compile(fr"\.{name}$")
-        task_fullnames = list(filter(r.search, list(current_app.tasks.keys())))
-        assert len(task_fullnames) == 1, f"check_task_and_respond must have an unambiguous task to start. Provided: {name}, Found: {task_fullnames}."
-        task = current_app.tasks[task_fullnames[0]]
-        return task
-    
-    def check_task_and_respond(request, task_name):
-        '''
-        Replaces a django view function that has the same signature.
+        # If no progress indicator is provided use the last one that self.progress 
+        # was used for.
+        if not progress:
+            progress = self._progress
         
-        Requires either a task (to start) or the task_id (of an already 
-        started task) in the GET request. Optionally the `cancel` keyword 
-        in the GET request if a task_id is provided will ask that task to 
-        abort.
-
-        :param request: An HTTM request which optionally profives `task_id` and `abort`
-        :param task: A string that identifies a registered celery task. If provided
-                     will check status of the task and respond as needed. If not 
-                     provided will start the task. 
-        
-        '''
-        task = get_task(task_name)
-        task_id = getattr(request,"GET", {}).get("task_id", None)
-        abort = "cancel" in getattr(request,"GET", {})
-        
-        # The name of a session key in which to store the count of steps the task reports.
-        # Every time we receive a PROGRESS report it will contain a "total" number of steps.
-        # it's nice to know that when the task is completed successfully, but Celery Tasks 
-        # don't report progress metadata on completion. So we just keep the latest value in
-        # session store so we have a sesnible figure to report when the task is completed. 
-        total_store = f"task_{task_name}_{task_id}_total_steps"
-    
-        print(f'\ncheck_task_and_respond: task {task_name} with id {task_id}. abort = {abort}')
-    
-        if task:
-            if not task_id:
-                # Start the task
-                print("About to start debug task")
-                r = task.delay()
-                print("Kick started the debug task")
-                task_id = r.task_id
-                state = r.state # "STARTED"
-                print(f"Got task id: {task_id}, state: {state}")
-                progress = task.progress()
-                result = None
-            else:
-                # Check pulse of the task
-                
-                # r.state is a string and constrained to be:
-                # "PENDING" - The task is waiting for execution.
-                # "STARTED" - The task has been started.
-                # "RETRY" - The task is to be retried, possibly because of failure.
-                # "FAILURE" - The task raised an exception, or has exceeded the retry limit.  The result attribute then contains the exception raised by the task.
-                # "SUCCESS" - The task executed successfully. The result attribute then contains the tasks return value.
-                #
-                # Custom states introduced here:
-                # "PROGRESS" - The task is running
-                # "ABORTED" - The task was cancelled 
-                #
-                # See: https://docs.celeryproject.org/en/latest/reference/celery.result.html
-                #      https://www.distributedpython.com/2018/09/28/celery-task-states/      
-        
-                if abort:
-                    task.abort(task_id)
-    
-                print(f"Fetching tasks result for task: {task_id}")
-                r =  AsyncResult(task_id)
-                print(f"Got result: {r.state}, {r.info}")
-        
-                state = r.state
-                if (state == "PENDING"):
-                    # We get this back if celery wasn't running nay workers for example
-                    # So we need to sensibly provide feedback here if that happens. Easy
-                    # to test as we just run tthe web site but not celery and start the task
-                    # it will come back as pending. 
-                    # TODO: implement default handling in progress.js 
-                    print("Task is PENDING")
-                    progress = task.progress()
-                    result = None
-                elif (state == "PROGRESS"):
-                    progress = r.info['progress']
-                    result = None
-                elif (state == "ABORTED"):
-                    progress = r.info['progress']
-                    result = r.info['result'] 
-                elif (state == "SUCCESS"):
-                    steps = request.session.pop(total_store, 0)
-                    progress = task.progress(100, steps, steps, "Done")
-                    result = r.result
-                    
-                print(f"STATE: {state}, RESULT: {result}, PROGRESS: {progress}")
-            
-    
-        # ProgressBar expects:
-        #
-        # id - if the task is running
-        # progress - a dict containing percent, current, total and description
-        # complete - a bool, true when done
-        # success - a bool, false on error, else true
-        # canceled - a bool, true when canceled  
-        # result - the result of the tast if complete and success
-        
-        if (state == "PENDING" or state == "STARTED" or state == "PROGRESS"):        
-            response = {'id': task_id, 'progress': progress}
-            request.session[total_store] = progress.get("total", 0) 
-        elif (state == "ABORTED"):
-            response = {'id': task_id, 'canceled': True, 'result': result}
+        instruction = self.check_for_instruction()
+        if instruction == "abort":
+            progress['description'] = f"Aborted"
+            self.update_state(state="ABORTED", meta={'result': 'unfinished result', 'progress': progress})
+            raise self.Abort
         else:
-            response = {'id': task_id, 'result': str(result), 'complete': True, 'success': True}
-         
-        return HttpResponse(json.dumps(response))
-            
-    return check_task_and_respond
+            return instruction
 
-@DjangoPulseCheck
-def DjangoCeleryInteractiveAJAX(request, task_name):
-    pass
+    @classmethod
+    def get_request_param(cls, request, key):
+        '''
+        Trivial class method to conveniently check GET or POST params for a 
+        key and return its value. Used so that Django views can receive 
+        task IDs and instructions in either form flexibly.
+        
+        :param cls:
+        :param request:
+        :param key:
+        '''
+        get = getattr(request,"GET", {}).get(key, None)
+        post = getattr(request,"POST", {}).get(key, None)
+        return post if get is None else get 
 

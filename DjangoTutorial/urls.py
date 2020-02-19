@@ -4,7 +4,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView, CeleryTestView2
 from Library.forms import AuthorCreate, AuthorDelete, AuthorUpdate, BookDelete, manage_books
-from celery_interactive import DjangoCeleryInteractiveAJAX
+from celery_interactive import Interactive
 
 urlpatterns = [
     path('author/add/', AuthorCreate.as_view(), name='author-add'),
@@ -26,7 +26,8 @@ urlpatterns = [
     path('celerytest/', CeleryTestView, name='celery-test'),
     
     path('test/<task_name>/', CeleryTestView2.as_view(), name='task-test'),
-    path('progress/<task_name>', DjangoCeleryInteractiveAJAX, name='task-progress'),
+    path('tell/<task_name>/', Interactive.Django.Instruct, name='task-tell'),
+    path('progress/<task_name>', Interactive.Django.Progress, name='task-progress'),
     
     path('article/<slug:slug>/', ArticleDetailView.as_view(), name='article-detail'),
     path('article/', ArticleListView.as_view(), name='article-list'),

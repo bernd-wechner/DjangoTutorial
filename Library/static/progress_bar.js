@@ -39,6 +39,11 @@ class ProgressBar {
         progressBarMessageElement.innerHTML = "Canceled!";
     }
 
+    onWaitDefault(progressBarElement, progressBarMessageElement, prompt) {
+        progressBarElement.style.backgroundColor = '#76ce60';
+        progressBarMessageElement.innerHTML = "Waiting... " + (prompt ? prompt : "");
+    }
+
     onSuccessDefault(progressBarElement, progressBarMessageElement) {
         progressBarElement.style.backgroundColor = '#76ce60';
         progressBarMessageElement.innerHTML = "Success!";
@@ -72,6 +77,7 @@ class ProgressBar {
         this.resultElement             = options.resultElement             || document.getElementById(this.resultElementId);
         
         this.onProgress = options.onProgress || this.onProgressDefault;
+        this.onWait     = options.onWait     || this.onWaitDefault;
         this.onCancel   = options.onCancel   || this.onCancelDefault;
         this.onSuccess  = options.onSuccess  || this.onSuccessDefault;
         this.onError    = options.onError    || this.onErrorDefault;
@@ -124,6 +130,9 @@ class ProgressBar {
             
             if (data.result)
             	this.onResult(this.resultElement, data.result);
+        }
+        else if (data.waiting) {
+        	this.onWait(this.progressBarElement, this.progressBarMessageElement, data.prompt);
         }
         else if (data.instructed) {
         	clearTimeout(this.timerID);

@@ -59,9 +59,11 @@ def debug_task2(self):
         
         time.sleep(1) 
     
+    logger.info(f'XDEBUG debug_task2, Waiting for Instruction ...')
+    instruction = self.wait_for_instruction("Please instruct (button above).")
 #     logger.info(f'XDEBUG debug_task2, Sleeping for an hour')
 #     time.sleep(60*60)
     # This implicitly sets state to SUCCESS
-    return 'final result'
+    return f'final result: {instruction}'
 
 

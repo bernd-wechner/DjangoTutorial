@@ -159,12 +159,8 @@ def Django_PulseCheck(view_function):
         instruction = Interactive.get_request_param(request, "instruction")
         abort = not Interactive.get_request_param(request, "cancel") is None
         
-        # The name of a session key in which to store the count of steps the task reports.
-        # Every time we receive a PROGRESS report it will contain a "total" number of steps.
-        # it's nice to know that when the task is completed successfully, but Celery Tasks 
-        # don't report progress metadata on completion. So we just keep the latest value in
-        # session store so we have a sesnible figure to report when the task is completed. 
-        total_store = f"task_{task_name}_{task_id}_total_steps"
+        # The name of a session key in which to store the last progress report.
+        store_last_progress = f"task_{task_name}_{task_id}_last_progress"
     
         print(f'\ncheck_task_and_respond: task {task_name} with id {task_id}. abort = {abort}')
     
@@ -192,6 +188,7 @@ def Django_PulseCheck(view_function):
                 # Custom states introduced here:
                 # "PROGRESS" - The task is running
                 # "ABORTED" - The task was cancelled 
+                # "WAITING" - The task was cancelled 
                 #
                 # See: https://docs.celeryproject.org/en/latest/reference/celery.result.html
                 #      https://www.distributedpython.com/2018/09/28/celery-task-states/      
@@ -218,12 +215,19 @@ def Django_PulseCheck(view_function):
                     result = None
                 elif (state == "PROGRESS"):
                     progress = r.info['progress']
+                    request.session[store_last_progress] = progress
                     result = None
+                elif (state == "WAITING"):
+                    progress = request.session.get(store_last_progress, None)
+                    if not isinstance(r.info, dict):
+                        print("Weird")
+                    prompt = r.info.get('prompt', "")
+                    result = "Waiting"
                 elif (state == "ABORTED"):
                     progress = r.info['progress']
                     result = r.info['result'] 
                 elif (state == "SUCCESS"):
-                    steps = request.session.pop(total_store, 0)
+                    steps = request.session.pop(store_last_progress, {}).get("total", 0) 
                     progress = task.progress(100, steps, steps, "Done")
                     result = r.result
                     
@@ -243,7 +247,10 @@ def Django_PulseCheck(view_function):
         
         if (state == "PENDING" or state == "STARTED" or state == "PROGRESS"):        
             response = {'id': task_id, 'progress': progress}
-            request.session[total_store] = progress.get("total", 0) 
+        elif (state == "WAITING"):
+            response = {'id': task_id, 'waiting': True, 'prompt': prompt}
+            if progress:
+                response["progress"] = progress
         elif (state == "ABORTED"):
             response = {'id': task_id, 'canceled': True, 'result': result}
         else:
@@ -488,6 +495,20 @@ class Interactive(Task):
         :param task_id: The unique id of the task we are asking to abort
         '''
         self.instruct(task_id, 'abort')
+
+    def wait_for_instruction(self, prompt=None):
+        q = getattr(self, 'q', None)
+        assert isinstance(q, SimpleQueue),  "A SimpleQueue must be provided via self.q to check for abort messages."
+        
+        logger.info(f'XDEBUG Updated status to WAITING with prompt "{prompt}"')
+        self.update_state(state="WAITING", meta={'prompt': prompt})
+        message = q.get()                   # wait till a message arrives - blocking
+
+        instruction = message.payload       # get an instruction if available
+        message.ack()                       # remove message from queue
+        q.close()
+        
+        return instruction
            
     def check_for_instruction(self):
         '''

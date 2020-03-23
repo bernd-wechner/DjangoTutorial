@@ -2,9 +2,12 @@ from django.urls import include, path
 from django.contrib import admin
 from django.conf import settings
 from django.conf.urls.static import static
-from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView, CeleryTestView2
+from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, TransactionManaged_BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView, CeleryInteractiveTestView
 from Library.forms import AuthorCreate, AuthorDelete, AuthorUpdate, BookDelete, manage_books
 from celery_interactive import Interactive
+from Library.celery import add_book
+
+interactive = Interactive()
 
 urlpatterns = [
     path('author/add/', AuthorCreate.as_view(), name='author-add'),
@@ -22,12 +25,16 @@ urlpatterns = [
     path('book/<int:pk>/', BookDetailView.as_view(), name='book-detail'),
     path('book/', BookListView.as_view(), name='book-list'),
 
+    path('book/ADD/', TransactionManaged_BookCreate.as_view(), name='tm-book-add'),
+    path('book/ADD/save', TransactionManaged_BookCreate.form_commit, name='tm-book-add-save'),
+    path('book/ADD/save/pulse', interactive.django.pulse, {'task_name': 'add_book'}, name='tm-book-add-save-pulse'),
+
     path('timetest/', TimeTestView, name='time-test'),
     path('celerytest/', CeleryTestView, name='celery-test'),
     
-    path('test/<task_name>/', CeleryTestView2.as_view(), name='task-test'),
-    path('tell/<task_name>/', Interactive.Django.Instruct, name='task-tell'),
-    path('progress/<task_name>', Interactive.Django.Progress, name='task-progress'),
+#     path('test/<task_name>/', CeleryInteractiveTestView.as_view(), name='task-test'),
+#     path('tell/<task_name>/', interactive.Django.Instruct, name='task-tell'),
+#     path('pulse/<task_name>', interactive.Django.Pulse, name='task-pulse'),
     
     path('article/<slug:slug>/', ArticleDetailView.as_view(), name='article-detail'),
     path('article/', ArticleListView.as_view(), name='article-list'),

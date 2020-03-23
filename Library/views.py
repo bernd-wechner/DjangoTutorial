@@ -8,9 +8,11 @@ from django.forms import ValidationError
 from django.http.response import HttpResponse, HttpResponseRedirect
 from django.urls import reverse,reverse_lazy
 from django.shortcuts import get_object_or_404
+from django.core.serializers.json import DjangoJSONEncoder 
 
 from dateutil import parser
 from datetime import datetime
+from uuid import uuid1
 
 from Library.models import Author, Book, Chapter, Article, Event
 
@@ -40,7 +42,6 @@ def get_SQL(query):
     cursor.execute('EXPLAIN ' + sql, params)
     return cursor.db.ops.last_executed_query(cursor, sql, params).replace("EXPLAIN ", "", 1)        
 
-    
 class AuthorDetailView(DetailView):
 
     model = Author
@@ -109,11 +110,36 @@ class BookCreate(CreateView):
     def form_valid(self, form):
         #self.object = form.save()
         return HttpResponseRedirect(reverse('book-detail', kwargs={'pk': self.object.pk}))
-  
-#     def form_invalid(self, form):
-#         context = self.get_context_data(form=form)        
-#         response = self.render_to_response(context)
-#         return response        
+
+from celery_interactive import Interactive
+
+from Library.celery import add_book
+class TransactionManaged_BookCreate(CreateView):
+    model = Book
+    fields = '__all__'
+    
+    ChapterFormSet = inlineformset_factory(Book, Chapter, fields="__all__")
+ 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['now'] = timezone.now()
+        context['chapters'] = self.ChapterFormSet()
+        return context
+    
+    def post(self, request, *args, **kwargs):
+        self.form = self.get_form()
+        
+        if self.form.is_valid():
+            return self.form_valid(self.form)
+        else:
+            return self.form_invalid(self.form)
+           
+    def form_valid(self, form):
+        return add_book.django.start_and_monitor(self.request, form)
+
+    def form_commit(self, request, form):
+        pass
+
   
 class BookUpdateView(UpdateView):
 
@@ -481,11 +507,7 @@ def TimeTestView(request):
     
     return HttpResponse(html)
 
-from .celery import debug_task, debug_task2, app as celery_app
-from celery import app
-from celery.result import AsyncResult
-from celery.contrib.abortable import AbortableAsyncResult
-from kombu import Connection, Exchange, Queue
+from .celery import debug_task
 
 def CeleryTestView(request):
     '''
@@ -505,8 +527,7 @@ def CeleryTestView(request):
     
     return HttpResponse("Cool")
 
-
-class CeleryTestView2(TemplateView):
+class CeleryInteractiveTestView(TemplateView):
     template_name = 'celery_test.html'
     def dispatch(self, request, *args, **kwargs):
         '''Makes view.task available in the template context'''

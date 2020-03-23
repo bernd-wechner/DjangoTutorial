@@ -6,8 +6,7 @@
 //
 // And described here:
 //
-// https://buildwithdjango.com/projects/celery-progress/
-
+// 	
 
 class Binder {}
 
@@ -26,55 +25,54 @@ Binder.bind = function(instance, cls) {
 	})
 }
 
-class ProgressBar {
-    onProgressDefault(progressBarElement, progressBarMessageElement, progress) {
-        progressBarElement.style.backgroundColor = '#68a9ef';
-        progressBarElement.style.width = progress.percent + "%";
+class PulseChecker {
+    onProgressDefault(progressBarElement, messageElement, progress) {
+    	if (this.progressBar) {
+	        progressBarElement.style.backgroundColor = '#68a9ef';
+	        progressBarElement.style.width = progress.percent + "%";
+	    }
         const description = progress.description || "";
-        progressBarMessageElement.innerHTML = progress.current + ' of ' + progress.total + ' processed. ' + description;
+        messageElement.innerHTML = progress.current + ' of ' + progress.total + ' processed. ' + description;
     }
 
-    onCancelDefault(progressBarElement, progressBarMessageElement) {
-        progressBarElement.style.backgroundColor = '#76ce60';
-        progressBarMessageElement.innerHTML = "Canceled!";
+    onCancelDefault(progressBarElement, messageElement) {
+    	if (this.progressBar) progressBarElement.style.backgroundColor = '#76ce60';
+        messageElement.innerHTML = "Canceled!";
     }
 
-    onWaitDefault(progressBarElement, progressBarMessageElement, prompt) {
-        progressBarElement.style.backgroundColor = '#76ce60';
-        progressBarMessageElement.innerHTML = "Waiting... " + (prompt ? prompt : "");
+    onWaitDefault(progressBarElement, messageElement, prompt) {
+    	if (this.progressBar) progressBarElement.style.backgroundColor = '#76ce60';
+	    messageElement.innerHTML = "Waiting... " + (prompt ? prompt : "");
     }
 
-    onSuccessDefault(progressBarElement, progressBarMessageElement) {
-        progressBarElement.style.backgroundColor = '#76ce60';
-        progressBarMessageElement.innerHTML = "Success!";
+    onSuccessDefault(progressBarElement, messageElement) {
+    	if (this.progressBar) progressBarElement.style.backgroundColor = '#76ce60';
+	        messageElement.innerHTML = "Success!";
     }
 
-    onErrorDefault(progressBarElement, progressBarMessageElement) {
-        progressBarElement.style.backgroundColor = '#dc4f63';
-        progressBarMessageElement.innerHTML = "Uh-Oh, something went wrong!";
+    onErrorDefault(progressBarElement, messageElement) {
+    	if (this.progressBar) progressBarElement.style.backgroundColor = '#dc4f63';
+	        messageElement.innerHTML = "Uh-Oh, something went wrong!";
     }
 
     onResultDefault(resultElement, result) {
-        if (resultElement) {
-            resultElement.innerHTML = result;
-        }
+        if (resultElement) resultElement.innerHTML = result;
     }
 
-    constructor(progressUrl, options) {
-    	this.progressUrl = progressUrl;
-    	
-    	// We have no ID yet, until we start the task
-        this.taskId = null;				        
+    constructor(URL, options) {
+    	this.URL = URL;
     	
         options = options || {};        
 
-        this.progressBarId = options.progressBarId || 'progress-bar';
-        this.progressBarMessage = options.progressBarMessageId || 'progress-bar-message';
-        this.resultElementId = options.resultElementId || 'celery-result';
+        this.taskId 		  = options.taskId           || null;				        
+		this.progressBar      = options.progressBar      || false;
+        this.progressBarId    = options.progressBarId    || 'progress-bar';
+        this.messageElementId = options.messageElementId || 'pulse-check-message';
+        this.resultElementId  = options.resultElementId  || 'pulse-check-result';
 
-        this.progressBarElement        = options.progressBarElement        || document.getElementById(this.progressBarId);
-        this.progressBarMessageElement = options.progressBarMessageElement || document.getElementById(this.progressBarMessage);
-        this.resultElement             = options.resultElement             || document.getElementById(this.resultElementId);
+        this.progressBarElement = options.progressBarElement || document.getElementById(this.progressBarId);
+        this.messageElement     = options.messageElement     || document.getElementById(this.messageElementId);
+        this.resultElement      = options.resultElement      || document.getElementById(this.resultElementId);
         
         this.onProgress = options.onProgress || this.onProgressDefault;
         this.onWait     = options.onWait     || this.onWaitDefault;
@@ -87,52 +85,67 @@ class ProgressBar {
         
         this.timerID = null;
         
-        Binder.bind(this, ProgressBar)
+      	// An sort of defacto standard on-line for flagging an AJAX request is to set
+      	// the X-Requested-With header to XMLHttpRequest. The JS fetch implementation
+      	// doesn't set it, though many JS libraries (like jQuery) do. So when fetching
+      	// in JS we set it explictly, to let the server know this is an AJAX request 
+      	// (and we expect a JSON repsonse not an HTML page).
+      	//
+      	// Any fetch call then like fetch(URL, this.isajax) will have the header set.
+      	this.is_ajax = {headers: {'X-Requested-With': 'XMLHttpRequest'}};
+        
+        Binder.bind(this, PulseChecker)
     }
     
     start() { 
+    	console.log("Starting Progress Bar ...");
     	this.cancelTask = false; 
     	this.instruction = null; 
     	this.resultElement.innerHTML = ""; 
-    	this.progressBarMessageElement.innerHTML = ""; 
+    	this.messageElement.innerHTML = ""; 
     	this.pollURL(); 
     }
     
     // These requests will be sent when the next pollURL fires (next time pollInterval elapses)
     // if pollURL is called explicitly weird stuff happens because we set off another setTimeout
     // chain of call backs.
-    cancel() { this.cancelTask = true; this.pollURL(); }
-    instruct(ielement) { this.instruction = document.getElementById(ielement).value; this.pollURL(); }
+    cancel(c_element) { c_element.style.visibility = "hidden"; this.cancelTask = true; this.pollURL(); }
+    instruct(i_element) { this.instruction = document.getElementById(i_element).value; this.pollURL(); }
 
     got_data(data) {
     	console.log("Got Data Back: " + JSON.stringify(data));
     	
-    	// If the AJAX call to taskProgressUrl returns an id, remember it
+    	// If the AJAX call to taskPulseCheckerUrl returns an id, remember it
     	if (data.id) this.taskId = data.id;
 
-    	if (data.progress) {
-            this.onProgress(this.progressBarElement, this.progressBarMessageElement, data.progress);
+        if (data.notify) {
+    		window.location.href = this.URL + "?notify&task_id=" + this.taskId;
         }
-    	
-        if (data.complete || data.canceled) {
+        else if (data.waiting) {
+        	if (data.confirm && this.taskId) {
+    	    	console.log("Redirecting to confirmation page.");
+        		window.location.href = this.URL + "?confirm&task_id=" + this.taskId;
+        	} else {
+    	    	console.log("Waiting.");
+        		this.onWait(this.progressBarElement, this.messageElement, data.prompt);
+        	}
+        }
+        else if (data.complete || data.canceled) {
         	clearTimeout(this.timerID);
         	
         	console.log("Completed: " + data.complete + "  Canceled: " + data.canceled);
             if (data.canceled)
-            	this.onCancel(this.progressBarElement, this.progressBarMessageElement);
+            	this.onCancel(this.progressBarElement, this.messageElement);
             else if (data.success)
-            	this.onSuccess(this.progressBarElement, this.progressBarMessageElement);
+            	this.onSuccess(this.progressBarElement, this.messageElement);
             else
-            	this.onError(this.progressBarElement, this.progressBarMessageElement);
+            	this.onError(this.progressBarElement, this.messageElement);
 
             // reset the task ID, so that if we call start we are in fact starting a new task
             this.taskId = null;
             
             if (data.result)
             	this.onResult(this.resultElement, data.result);
-        }
-        else if (data.waiting) {
-        	this.onWait(this.progressBarElement, this.progressBarMessageElement, data.prompt);
         }
         else if (data.instructed) {
         	clearTimeout(this.timerID);
@@ -146,6 +159,11 @@ class ProgressBar {
         	// the stack.
             this.timerID = setTimeout(this.pollURL, this.pollInterval);
         }
+        
+    	if (data.progress && !(data.waiting && data.confirm)) {
+        	console.log("Rendering Progress: " + data.progress.percent);
+            this.onProgress(this.progressBarElement, this.messageElement, data.progress);
+        }
     }
 
     got_response(response) {
@@ -156,9 +174,9 @@ class ProgressBar {
         // fetch is vanilla JS returning a promise
         // .then defined the function called when the promise is fulfilled
         // The arrow function can be used todefine thet function too, so
-        //   fetch(progressUrl).then(function(response) {
+        //   fetch(URL).then(function(response) {
         // should also work as:
-        //   fetch(progressUrl).then(response => {
+        //   fetch(URL).then(response => {
         
         // response should be a a JSON dict with elements progress, complete, success and/or result
         // response.progress is itself a dict with three elements current, total, percent and optionally 
@@ -166,7 +184,7 @@ class ProgressBar {
         
         // To track progress we want to pass the task ID to the server and if we've received 
         // a cancel request then we should pass it on to the server.
-        const taskProgressUrl = this.progressUrl 
+        const PulseCheckUrl = this.URL 
         			          + (this.taskId     ? "?task_id=" + this.taskId : "") 
         			          + (this.cancelTask ? "&cancel" : "")
         			          + (this.instruction ? "&instruction=" + this.instruction : "");
@@ -179,13 +197,9 @@ class ProgressBar {
         
         // Send an instruction only once if suppplied.
         this.instruction = null
-        
-		if (taskProgressUrl == this.progressUrl) {
-			console.log("Fetching: " + taskProgressUrl);
-			var stophere 
-			stophere = 1;
-		}
-		
-        fetch(taskProgressUrl).then(this.got_response);        
+  
+      	console.log("Fetching: " + PulseCheckUrl);
+      
+        fetch(PulseCheckUrl, this.is_ajax).then(this.got_response);
     }
 };

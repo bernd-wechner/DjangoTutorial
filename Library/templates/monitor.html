@@ -1,0 +1,18 @@
+<html>
+<head>
+	{% load static %}
+	<title>{{title}}</title>
+	<script src="{% static 'pulse_check.js' %}"></script>
+</head>
+<body>
+	<H1>{{title}}</H1>
+	<div id='progress-bar'>&nbsp;</div>
+	<div id='pulse-check-message'></div>
+	<div id="pulse-check-result"></div>
+	<button onclick='PC.cancel(this);'>Cancel</button>
+</body>
+	
+<script>
+	PC = new PulseChecker("{% url 'tm-book-add-save-pulse' %}", {taskId: "{{id}}", progressBar: true})
+	PC.start()
+</script> 

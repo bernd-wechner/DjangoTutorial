@@ -1,13 +1,10 @@
 # A simple Celery Turorial based on:
 #  http://docs.celeryproject.org/en/latest/django/first-steps-with-django.html
-from celery import Celery, Task
+from celery import Celery
 from celery.utils.log import get_logger
-from celery.contrib.abortable import AbortableTask
 import os
 import time
-from multiprocessing.shared_memory import ShareableList
 from builtins import all
-from abc import abstractstaticmethod
 
 logger = get_logger(__name__)
 
@@ -38,15 +35,19 @@ def debug_task(self):
 # A task being bound means the first argument to the task will always be the task 
 # instance (self), just like Python bound methods:
 from celery_interactive import Interactive
+from django.db import transaction
 
-@app.task(bind=True, base=Interactive)
+@app.task(base=Interactive, bind=True)
 @Interactive.Connected
-def debug_task2(self):
+@transaction.atomic
+def debug_interactive_task(self, *args, **kwargs):
+    logger.info(f'XDEBUG debug_interactive_task, starting with {args} and {kwargs}')
+    test_confirm = kwargs.get("test_confirm", args[0] if args else False)
+    
     n = 10
     for i in range(n):
-        logger.info(f'XDEBUG debug_task2, Working... {i+1} of {n}')
+        logger.info(f'XDEBUG debug_interactive_task, Working... {i+1} of {n}')
         
-        #progress = {'percent':100*(i+1)/n, 'current':i+1, 'total': n, 'description': f"Description number {i+1}"}
         progress = self.progress(100*(i+1)/n, i+1, n, f"Description number {i+1}")
 
         self.update_state(state="PROGRESS", meta={'progress': progress})
@@ -55,15 +56,120 @@ def debug_task2(self):
         instruction = self.check_for_abort()
 
         if instruction:
-            logger.info(f'XDEBUG debug_task2, Instructed to: "{instruction}"')
+            logger.info(f'XDEBUG debug_interactive_task, Instructed to: "{instruction}"')
         
         time.sleep(1) 
     
-    logger.info(f'XDEBUG debug_task2, Waiting for Instruction ...')
-    instruction = self.wait_for_instruction("Please instruct (button above).")
-#     logger.info(f'XDEBUG debug_task2, Sleeping for an hour')
+    if test_confirm:
+        logger.info(f'XDEBUG debug_interactive_task, Waiting for Confirmation ...')
+
+        # Confirmation request
+        instruction = self.wait_for_instruction(self.ASK_CONFIRM, "This is an interim result")
+        
+        if instruction == self.COMMIT:
+            logger.info(f'XDEBUG debug_interactive_task, COMMITING.')
+            return f'final result: COMMIT'
+        elif instruction == self.ROLLBACK:
+            logger.info(f'XDEBUG debug_interactive_task, ROLLING BACK.')
+            raise self.Exceptions.Rollback
+        else:
+            logger.info(f'XDEBUG debug_interactive_task, ROLLING BACK (implicitly).')
+            raise self.Exceptions.Rollback
+    else:
+        logger.info(f'XDEBUG debug_interactive_task, Waiting for Instruction ...')
+
+        # Generic instruction
+        instruction = self.wait_for_instruction("Please instruct (button above).")
+        
+    
+#     logger.info(f'XDEBUG debug_interactive_task, Sleeping for an hour')
 #     time.sleep(60*60)
     # This implicitly sets state to SUCCESS
     return f'final result: {instruction}'
 
+@app.task(bind=True, base=Interactive)
+@Interactive.Connected
+@transaction.atomic
+def add_book(self, *args, **kwargs):
+    '''
+    A transaction manager for adding books. Testing Celery Interactive.
+    '''
+    logger.info(f'XDEBUG add_book, starting with {args} and {kwargs}')
+    logger.info(f'XDEBUG add_book, Packed Form: {kwargs["form"]}')
+    logger.info(f'XDEBUG add_book, QUEUE: {self.instruction_queue_name}')
+    
+    #time.sleep(9999999)
+    
+    form = self.django.unpack_form(kwargs["form"])
 
+    if form.is_valid():
+        logger.info(f'XDEBUG add_book, FORM is VALID')
+    else:
+        logger.info(f'XDEBUG add_book, FORM is INVALID')
+        
+    for i, e in enumerate(form.errors):
+        logger.info(f'XDEBUG add_book, ERROR: {i} {e}')
+
+#     logger.info(f'XDEBUG SENDING CONFIG ...')
+#     self.update_state(state="STARTING", meta={'config': {"a": "val a", "b":"val b"}})
+   
+    n = 10
+    for i in range(n):
+        logger.info(f'XDEBUG add_book, Working... {i+1} of {n}')
+         
+        progress = self.progress(100*(i+1)/n, i+1, n, f"First pass, step {i+1}")
+ 
+        self.send_progress(progress)
+ 
+        time.sleep(0.5) 
+     
+    logger.info(f'XDEBUG add_book, Waiting for Approval to Continue ...')
+ 
+    # Confirmation request
+    # Will either return (self.CONTINUE) or raise a self.ABORT exception
+    self.wait_for_continue_or_abort("This is an interim result", progress, continue_monitoring=f"Second pass test for {self.shortname}")
+    #self.wait_for_commit_or_rollback("This is an interim result", progress)    
+    
+    for i in range(n):
+        logger.info(f'XDEBUG add_book, Working... {i+1} of {n}')
+        
+        progress = self.progress(100*(i+1)/n, i+1, n, f"Second pass, step {i+1}")
+
+        self.send_progress(progress)
+
+        time.sleep(0.5) 
+
+    logger.info(f'XDEBUG add_book, Waiting for Confirmation ...')
+
+    # Confirmation request
+    # Will either return (self.COMMIT) or raise a self.Exceptions.Rollback exception
+    try:
+        self.wait_for_commit_or_rollback("This is an interim result", progress, continue_monitoring=f"Third (and Final) pass test for {self.shortname}")
+    except self.Exceptions.Rollback:
+        pass
+
+    for i in range(n):
+        logger.info(f'XDEBUG add_book, Working... {i+1} of {n}')
+        
+        progress = self.progress(100*(i+1)/n, i+1, n, f"Third pass, step {i+1}")
+
+        self.send_progress(progress)
+
+        time.sleep(0.5) 
+
+    logger.info(f'XDEBUG add_book, Waiting for Confirmation ...')
+
+    # Confirmation request
+    # Will either return (self.COMMIT) or raise a self.ROLLBACK exception
+    self.wait_for_commit_or_rollback("This is an interim result", progress)
+
+    return f'final result: COMMITTED'
+
+@Interactive.Config
+def configure_task(task, *args, **kwargs):
+    task.initial_monitor_title = f"First pass test for {task.shortname}"
+    #task.django.templates.monitor = "monitor.html"
+    #task.django.templates.confirm = "confirm.html"
+    task.django.templates.aborted = None #"aborted.html"
+    #task.django.templates.committed = "committed.html"
+    #task.django.templates.rolledback = "rolledback.html"

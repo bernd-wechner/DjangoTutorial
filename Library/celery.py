@@ -4,7 +4,6 @@ from celery import Celery
 from celery.utils.log import get_logger
 import os
 import time
-from builtins import all
 
 logger = get_logger(__name__)
 
@@ -38,7 +37,6 @@ from celery_interactive import Interactive
 from django.db import transaction
 
 @app.task(base=Interactive, bind=True)
-@Interactive.Connected
 @transaction.atomic
 def debug_interactive_task(self, *args, **kwargs):
     logger.info(f'XDEBUG debug_interactive_task, starting with {args} and {kwargs}')
@@ -88,42 +86,38 @@ def debug_interactive_task(self, *args, **kwargs):
     return f'final result: {instruction}'
 
 @app.task(bind=True, base=Interactive)
-@Interactive.Connected
 @transaction.atomic
 def add_book(self, *args, **kwargs):
     '''
     A transaction manager for adding books. Testing Celery Interactive.
     '''
-    logger.info(f'XDEBUG add_book, starting with {args} and {kwargs}')
-    logger.info(f'XDEBUG add_book, Packed Form: {kwargs["form"]}')
-    logger.info(f'XDEBUG add_book, QUEUE: {self.instruction_queue_name}')
-    
-    #time.sleep(9999999)
+    logger.info(f'Starting with {args} and {kwargs}')
+    logger.info(f'Packed Form: {kwargs["form"]}')
     
     form = self.django.unpack_form(kwargs["form"])
 
     if form.is_valid():
-        logger.info(f'XDEBUG add_book, FORM is VALID')
+        logger.info(f'FORM is VALID')
     else:
-        logger.info(f'XDEBUG add_book, FORM is INVALID')
+        logger.info(f'FORM is INVALID')
         
     for i, e in enumerate(form.errors):
-        logger.info(f'XDEBUG add_book, ERROR: {i} {e}')
+        logger.info(f'ERROR: {i} {e}')
 
 #     logger.info(f'XDEBUG SENDING CONFIG ...')
 #     self.update_state(state="STARTING", meta={'config': {"a": "val a", "b":"val b"}})
    
     n = 10
     for i in range(n):
-        logger.info(f'XDEBUG add_book, Working... {i+1} of {n}')
+        logger.info(f'Working... {i+1} of {n}')
          
-        progress = self.progress(100*(i+1)/n, i+1, n, f"First pass, step {i+1}")
+        progress = self.progress(100*(i+1)/n, i+1, n, f"First pass, step {i+1}", f"Interim result at step {i+1}")
  
         self.send_progress(progress)
  
         time.sleep(0.5) 
      
-    logger.info(f'XDEBUG add_book, Waiting for Approval to Continue ...')
+    logger.info(f'Waiting for Approval to Continue (continue or abort) ...')
  
     # Confirmation request
     # Will either return (self.CONTINUE) or raise a self.ABORT exception
@@ -131,15 +125,15 @@ def add_book(self, *args, **kwargs):
     #self.wait_for_commit_or_rollback("This is an interim result", progress)    
     
     for i in range(n):
-        logger.info(f'XDEBUG add_book, Working... {i+1} of {n}')
+        logger.info(f'Working... {i+1} of {n}')
         
-        progress = self.progress(100*(i+1)/n, i+1, n, f"Second pass, step {i+1}")
+        progress = self.progress(100*(i+1)/n, i+1, n, f"Second pass, step {i+1}", f"Interim result at step {i+1}")
 
         self.send_progress(progress)
 
         time.sleep(0.5) 
 
-    logger.info(f'XDEBUG add_book, Waiting for Confirmation ...')
+    logger.info(f'Waiting for Confirmation (commit or rollback) ...')
 
     # Confirmation request
     # Will either return (self.COMMIT) or raise a self.Exceptions.Rollback exception
@@ -149,15 +143,15 @@ def add_book(self, *args, **kwargs):
         pass
 
     for i in range(n):
-        logger.info(f'XDEBUG add_book, Working... {i+1} of {n}')
+        logger.info(f'Working... {i+1} of {n}')
         
-        progress = self.progress(100*(i+1)/n, i+1, n, f"Third pass, step {i+1}")
+        progress = self.progress(100*(i+1)/n, i+1, n, f"Third pass, step {i+1}", f"Interim result at step {i+1}")
 
         self.send_progress(progress)
 
         time.sleep(0.5) 
 
-    logger.info(f'XDEBUG add_book, Waiting for Confirmation ...')
+    logger.info(f'Waiting for Confirmation  (commit or rollback) ...')
 
     # Confirmation request
     # Will either return (self.COMMIT) or raise a self.ROLLBACK exception
@@ -166,7 +160,7 @@ def add_book(self, *args, **kwargs):
     return f'final result: COMMITTED'
 
 @Interactive.Config
-def configure_task(task, *args, **kwargs):
+def configure_task(task, *args, **kwargs):  # PyDev @UnusedVariable
     task.initial_monitor_title = f"First pass test for {task.shortname}"
     #task.django.templates.monitor = "monitor.html"
     #task.django.templates.confirm = "confirm.html"

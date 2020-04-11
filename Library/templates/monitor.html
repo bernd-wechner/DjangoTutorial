@@ -6,10 +6,23 @@
 </head>
 <body>
 	<H1>{{title}}</H1>
-	<div id='progress-bar'>&nbsp;</div>
-	<div id='pulse-check-message'></div>
-	<div id="pulse-check-result"></div>
-	<button onclick='PC.cancel(this);'>Cancel</button>
+	
+	<p>
+	<label for="pulse-check-progress-bar">Progress:</label>
+		<div id='pulse-check-progress-bar'>&nbsp;</div>
+	</p>
+		
+	<p>
+	<label for="pulse-check-message">Message:</label>
+		<span id='pulse-check-message'></span>
+	</p>
+		
+	<p><button onclick='PC.cancel(this);'>Cancel</button></p>
+
+	<p>
+	<label for="pulse-check-result">Result:</label>
+		<span id="pulse-check-result"></span>
+	</p>		
 </body>
 	
 <script>

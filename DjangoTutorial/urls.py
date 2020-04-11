@@ -1,11 +1,10 @@
-from django.urls import include, path
+from django.urls import path
 from django.contrib import admin
 from django.conf import settings
 from django.conf.urls.static import static
-from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, TransactionManaged_BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView, CeleryInteractiveTestView
+from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, TransactionManaged_BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView
 from Library.forms import AuthorCreate, AuthorDelete, AuthorUpdate, BookDelete, manage_books
 from celery_interactive import Interactive
-from Library.celery import add_book
 
 interactive = Interactive()
 

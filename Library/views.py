@@ -1,3 +1,5 @@
+import pytz
+
 from django.views.generic import DetailView, ListView, CreateView, UpdateView, TemplateView
 from django.utils import timezone
 from django.utils.timezone import activate, deactivate
@@ -6,17 +8,12 @@ from django.db import connection, transaction
 from django.db.utils import IntegrityError
 from django.forms import ValidationError
 from django.http.response import HttpResponse, HttpResponseRedirect
-from django.urls import reverse,reverse_lazy
-from django.shortcuts import get_object_or_404
-from django.core.serializers.json import DjangoJSONEncoder 
+from django.urls import reverse
 
 from dateutil import parser
-from datetime import datetime
-from uuid import uuid1
 
 from Library.models import Author, Book, Chapter, Article, Event
 
-import pytz, json
 from .HTML import Table
 
 def get_SQL(query):
@@ -51,7 +48,6 @@ class AuthorDetailView(DetailView):
         context['now'] = timezone.now()
         return context
 
-import sys
 class AuthorListView(ListView):
 
     model = Author
@@ -83,7 +79,7 @@ class BookCreate(CreateView):
         context['chapters'] = self.ChapterFormSet()
         return context
     
-    def post(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):  # PyDev @UnusedVariable
         self.form = self.get_form()
         
         if self.form.is_valid():
@@ -107,11 +103,9 @@ class BookCreate(CreateView):
         else:
             return self.form_invalid(self.form)
            
-    def form_valid(self, form):
+    def form_valid(self, form):   # PyDev @UnusedVariable
         #self.object = form.save()
         return HttpResponseRedirect(reverse('book-detail', kwargs={'pk': self.object.pk}))
-
-from celery_interactive import Interactive
 
 from Library.celery import add_book
 class TransactionManaged_BookCreate(CreateView):
@@ -126,7 +120,7 @@ class TransactionManaged_BookCreate(CreateView):
         context['chapters'] = self.ChapterFormSet()
         return context
     
-    def post(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):  # PyDev @UnusedVariable
         self.form = self.get_form()
         
         if self.form.is_valid():
@@ -135,7 +129,7 @@ class TransactionManaged_BookCreate(CreateView):
             return self.form_invalid(self.form)
            
     def form_valid(self, form):
-        return add_book.django.start_and_monitor(self.request, form)
+        return add_book.django.start_and_monitor(self.request, form)  # @UndefinedVariable
 
     def form_commit(self, request, form):
         pass
@@ -160,7 +154,7 @@ class BookUpdateView(UpdateView):
         context['chapters'] = self.ChapterFormSet(instance=book)
         return context
 
-    def post(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):  # PyDev @UnusedVariable
         #self.success_url = reverse('book-detail', kwargs=self.kwargs)
         
         # We MUST set self.object to do an Update. Failing to do so, will create a new object!
@@ -208,7 +202,7 @@ class BookUpdateView(UpdateView):
         else:
             return self.form_invalid(self.form)                           
            
-    def form_valid(self, form):
+    def form_valid(self, form):  # PyDev @UnusedVariable
         #self.object = form.save()
         return HttpResponseRedirect(reverse('book-detail', kwargs=self.kwargs))
   
@@ -222,7 +216,7 @@ class BookListView(ListView):
     model = Book
     paginate_by = 100  # if pagination is desired
     
-    def get_queryset(self, *args, **kwargs):
+    def get_queryset(self, *args, **kwargs):  # PyDev @UnusedVariable
         #qs = self.model.objects.filter(title='My Life')
         qs = self.model.objects.all()
         
@@ -268,7 +262,7 @@ class ArticleListView(ListView):
         context['now'] = timezone.now()
         return context
     
-def TimeTestView(request):
+def TimeTestView(request):  # PyDev @UnusedVariable
     '''
     A view which tests how timezones play out in Django.
     
@@ -509,7 +503,7 @@ def TimeTestView(request):
 
 from .celery import debug_task
 
-def CeleryTestView(request):
+def CeleryTestView(request): # PyDev @UnusedVariable
     '''
     A simple view to test Celery task creation. The task shoudl be defined in tasks.py in same directory as this
     file.
@@ -520,7 +514,7 @@ def CeleryTestView(request):
         print(body)
     
     print("About to start debug task")
-    r = debug_task.apply_async()
+    r = debug_task.apply_async()  # @UndefinedVariable
     print("Kick started the debug task")
     print(r.get(on_message=on_message, propagate=False))
     print("Done.")

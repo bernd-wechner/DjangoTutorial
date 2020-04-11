@@ -1,0 +1,59 @@
+set deliver_json (is it an AJAX call or page request)
+
+instruction received? send it to task
+please_abort or please_cancel received: send it to task
+
+get state of task (AsyncResult)
+
+check if we were waiting on something: handle WAITING/STILL_WAITING state
+
+process state:
+    PROGRESS
+        JSON report
+        TODO: support not deliver_json (start a monitor)
+    STARTED
+        JSON report
+        TODO: support not deliver_json (start a monitor)
+    PENDING
+        JSON report
+        TODO: support not deliver_json (start a monitor)
+    ABORTED or ROLLEDBACK
+        JSON or page response
+        if page response desired, return JSON asking monitor to reload URL with ?notify
+    FAILURE
+        JSON report
+        TODO: support not deliver_json (configured template)
+    SUCCESS
+        JSON report
+        TODO: support not deliver_json (configured template)
+    WAITING or STILL_WAITING
+        prompt is ASK_CONTINUE
+            if "confirm" in request
+                ask user for confirmation via
+                    JSON response
+                    or configured template
+            if "continue" in request:
+                send instruction to task
+                continue monitoring by
+                    JSON response to live monitor
+                    or start monitor (configured template)
+            else
+                ask monitor to reload URL with ?confirm
+
+        prompt is ASK_COMMIT
+            if "confirm" in request
+                ask user for confirmation via
+                    JSON response
+                    or configured template
+            if "commit" or "rollback" in request:
+                send instruction to task
+                optionally continue monitoring by
+                    JSON response to live monitor
+                    or start monitor (configured template)
+                or don't continue monitoring by returning configured template
+            else
+                ask monitor to reload URL with ?confirm
+
+Get wrapped functions contrib
+
+Return JSON response

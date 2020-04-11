@@ -26,37 +26,76 @@ Binder.bind = function(instance, cls) {
 }
 
 class PulseChecker {
-    onProgressDefault(progressBarElement, messageElement, progress) {
-    	if (this.progressBar) {
-	        progressBarElement.style.backgroundColor = '#68a9ef';
-	        progressBarElement.style.width = progress.percent + "%";
+    onProgressDefault(elements, labels, progress) {
+    	const progressElement = elements.length > 0 ? elements[0]: null;
+    	const messageElement  = elements.length > 1 ? elements[1]: null;
+    	const resultElement   = elements.length > 2 ? elements[2]: null;
+
+    	const progressLabel = labels.length > 0 ? labels[0]: null;
+    	const messageLabel  = labels.length > 1 ? labels[1]: null;
+    	const resultLabel   = labels.length > 2 ? labels[2]: null;
+    
+    	if (this.progressBar && progressElement) {
+	        progressElement.style.backgroundColor = '#68a9ef';
+	        progressElement.style.width = progress.percent + "%";
 	    }
-        const description = progress.description || "";
-        messageElement.innerHTML = progress.current + ' of ' + progress.total + ' processed. ' + description;
+	    
+	    if (messageElement) {
+	        const description = progress.description || "";
+	        messageElement.innerHTML = progress.current + ' of ' + progress.total + ' processed. ' + description;
+        }
+        
+        if (progress.result && resultElement) {
+        	resultElement.innerHTML = progress.result;
+        	if (resultLabel) resultLabel.style.display = progress.result ? 'Block' : 'None';  
+        }
     }
 
-    onCancelDefault(progressBarElement, messageElement) {
-    	if (this.progressBar) progressBarElement.style.backgroundColor = '#76ce60';
-        messageElement.innerHTML = "Canceled!";
+    onCancelDefault(elements, labels, result) {
+    	const progressElement = elements.length > 0 ? elements[0]: null;
+    	const messageElement  = elements.length > 1 ? elements[1]: null;
+    	const resultElement   = elements.length > 2 ? elements[2]: null;
+    	
+    	if (this.progressBar && progressElement) progressElement.style.backgroundColor = '#76ce60';
+        if (messageElement) messageElement.innerHTML = "Canceled!";
+	    if (result && resultElement) {
+        	resultElement.innerHTML = result;
+        	if (resultLabel) resultLabel.style.display = result ? 'Block' : 'None';  
+        }
     }
 
-    onWaitDefault(progressBarElement, messageElement, prompt) {
-    	if (this.progressBar) progressBarElement.style.backgroundColor = '#76ce60';
-	    messageElement.innerHTML = "Waiting... " + (prompt ? prompt : "");
+    onWaitDefault(elements, labels, result, prompt) {
+    	const progressElement = elements.length > 0 ? elements[0]: null;
+    	const messageElement  = elements.length > 1 ? elements[1]: null;
+    	const resultElement   = elements.length > 2 ? elements[2]: null;
+    	
+    	if (this.progressBar && progressElement) progressElement.style.backgroundColor = '#76ce60';
+	    if (messageElement) messageElement.innerHTML = "Waiting... " + (prompt ? prompt : "");
+	    if (result && resultElement) {
+        	resultElement.innerHTML = result;
+        	if (resultLabel) resultLabel.style.display = result ? 'Block' : 'None';  
+        }
     }
 
-    onSuccessDefault(progressBarElement, messageElement) {
-    	if (this.progressBar) progressBarElement.style.backgroundColor = '#76ce60';
-	        messageElement.innerHTML = "Success!";
+    onSuccessDefault(elements, labels, result) {
+    	const progressElement = elements.length > 0 ? elements[0]: null;
+    	const messageElement  = elements.length > 1 ? elements[1]: null;
+    	const resultElement   = elements.length > 2 ? elements[2]: null;
+    	
+    	if (this.progressBar && progressElement) progressElement.style.backgroundColor = '#76ce60';
+	    if (messageElement) messageElement.innerHTML = "Success!";
+	    if (result && resultElement) {
+        	resultElement.innerHTML = result;
+        	if (resultLabel) resultLabel.style.display = result ? 'Block' : 'None';  
+        }
     }
 
-    onErrorDefault(progressBarElement, messageElement) {
-    	if (this.progressBar) progressBarElement.style.backgroundColor = '#dc4f63';
-	        messageElement.innerHTML = "Uh-Oh, something went wrong!";
-    }
-
-    onResultDefault(resultElement, result) {
-        if (resultElement) resultElement.innerHTML = result;
+    onErrorDefault(elements, labels, errormessage) {
+    	const progressElement = elements.length > 0 ? elements[0]: null;
+    	const messageElement  = elements.length > 1 ? elements[1]: null;
+    	
+    	if (this.progressBar) progressElement.style.backgroundColor = '#dc4f63';
+		if (messageElement) messageElement.innerHTML = errormessage ? errormessage : "Uh-Oh, something went wrong!";
     }
 
     constructor(URL, options) {
@@ -66,20 +105,28 @@ class PulseChecker {
 
         this.taskId 		  = options.taskId           || null;				        
 		this.progressBar      = options.progressBar      || false;
-        this.progressBarId    = options.progressBarId    || 'progress-bar';
-        this.messageElementId = options.messageElementId || 'pulse-check-message';
-        this.resultElementId  = options.resultElementId  || 'pulse-check-result';
 
-        this.progressBarElement = options.progressBarElement || document.getElementById(this.progressBarId);
-        this.messageElement     = options.messageElement     || document.getElementById(this.messageElementId);
-        this.resultElement      = options.resultElement      || document.getElementById(this.resultElementId);
+        this.progressElementId = options.progressElementId  || 'pulse-check-progress-bar';
+        this.messageElementId  = options.messageElementId   || 'pulse-check-message';
+        this.resultElementId   = options.resultElementId    || 'pulse-check-result';
+
+        this.progressLabelId    = options.progressLabelId  || 'pulse-check-progress-label';
+        this.messageLabelId     = options.messageLabelId   || 'pulse-check-message-label';
+        this.resultLabelId      = options.resultLabelId    || 'pulse-check-result-label';
+
+        this.progressElement = options.progressElement || document.getElementById(this.progressElementId);
+        this.messageElement  = options.messageElement  || document.getElementById(this.messageElementId);
+        this.resultElement   = options.resultElement    || document.getElementById(this.resultElementId);
+
+        this.progressLabel = options.progressLabel || document.getElementById(this.progressLabelId);
+        this.messageLabel  = options.messageLabel  || document.getElementById(this.messageLabelId);
+        this.resultLabel   = options.resultLabel   || document.getElementById(this.resultLabelId);
         
         this.onProgress = options.onProgress || this.onProgressDefault;
         this.onWait     = options.onWait     || this.onWaitDefault;
         this.onCancel   = options.onCancel   || this.onCancelDefault;
         this.onSuccess  = options.onSuccess  || this.onSuccessDefault;
         this.onError    = options.onError    || this.onErrorDefault;
-        this.onResult   = options.onResult   || this.onResultDefault;
         
         this.pollInterval = options.pollInterval || 500;
         
@@ -118,6 +165,9 @@ class PulseChecker {
     	// If the AJAX call to taskPulseCheckerUrl returns an id, remember it
     	if (data.id) this.taskId = data.id;
 
+    	const elements = [this.progressElement, this.messageElement, this.resultElement];
+    	const labels   = [this.progressLabel,   this.messageLabel,   this.resultLabel];
+
         if (data.notify) {
     		window.location.href = this.URL + "?notify&task_id=" + this.taskId;
         }
@@ -127,7 +177,7 @@ class PulseChecker {
         		window.location.href = this.URL + "?confirm&task_id=" + this.taskId;
         	} else {
     	    	console.log("Waiting.");
-        		this.onWait(this.progressBarElement, this.messageElement, data.prompt);
+        		this.onWait(elements, labels, data.result, data.prompt);
         	}
         }
         else if (data.complete || data.canceled) {
@@ -135,17 +185,14 @@ class PulseChecker {
         	
         	console.log("Completed: " + data.complete + "  Canceled: " + data.canceled);
             if (data.canceled)
-            	this.onCancel(this.progressBarElement, this.messageElement);
+            	this.onCancel(elements, labels, data.result);
             else if (data.success)
-            	this.onSuccess(this.progressBarElement, this.messageElement);
+            	this.onSuccess(elements, labels, data.result);
             else
-            	this.onError(this.progressBarElement, this.messageElement);
+            	this.onError(elements, labels, data.result);
 
             // reset the task ID, so that if we call start we are in fact starting a new task
             this.taskId = null;
-            
-            if (data.result)
-            	this.onResult(this.resultElement, data.result);
         }
         else if (data.instructed) {
         	clearTimeout(this.timerID);
@@ -162,7 +209,8 @@ class PulseChecker {
         
     	if (data.progress && !(data.waiting && data.confirm)) {
         	console.log("Rendering Progress: " + data.progress.percent);
-            this.onProgress(this.progressBarElement, this.messageElement, data.progress);
+        	
+            this.onProgress(elements, labels, data.progress);
         }
     }
 

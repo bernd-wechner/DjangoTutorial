@@ -5,10 +5,14 @@ def Task(task_name, task_id=None):
     '''
     Given the name of task will return an instance of a task of that name
     provided it's been registered with Celery and the name identifies a 
-    unique task.
+    unique task. Will populate Task.request.id with an id if supplied.
+    
+    This is useful for making registry fetched client side instances 
+    look like worker side requested instances from the perspective of 
+    internal methods that need a task id.
      
-    :param cls:
-    :param name: The name fo the task desired.
+    :param task_name: The name of the task desired.
+    :param task_id:   The id of the task (optional) 
     '''
     r = re.compile(fr"\.{task_name}$")
     task_fullnames = list(filter(r.search, list(current_app.tasks.keys())))

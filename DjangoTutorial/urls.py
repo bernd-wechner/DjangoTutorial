@@ -26,7 +26,7 @@ urlpatterns = [
 
     path('book/ADD/', TransactionManaged_BookCreate.as_view(), name='tm-book-add'),
     path('book/ADD/save', TransactionManaged_BookCreate.form_commit, name='tm-book-add-save'),
-    path('book/ADD/save/pulse', interactive.django.pulse, {'task_name': 'add_book'}, name='tm-book-add-save-pulse'),
+    path('book/ADD/save/pulse', interactive.django.pulse_check, {'task_name': 'add_book'}, name='tm-book-add-save-pulse'),
 
     path('timetest/', TimeTestView, name='time-test'),
     path('celerytest/', CeleryTestView, name='celery-test'),

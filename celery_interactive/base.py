@@ -4,9 +4,6 @@ from celery.exceptions import Ignore
 
 from inspect import signature
 
-from .django import Django
-
-
 class InteractiveBase(Celery_Task):
     '''
     Augments the Celery.Task with some additional functions andf features
@@ -162,21 +159,30 @@ class InteractiveBase(Celery_Task):
     ############################################################################################    
     
     _progress = None
+    
+    # A configuration that permits or prohibits parallelism.
+    # Set to True if you want that only one running instance is
+    # permitted at a time. Can be enabled in the decorator with:
+    # @app.task(bind=True, base=Interactive, one_at_a_time=True)   
+    one_at_a_time = False
 
-    # Use indexed queue names? If True adds a small overhead in finding a free 
-    # indexed queue name on the broker when the task runs. This can make things
-    # a little easier to minitor if needed than using that UUID task_id in the
-    # queue name. But the UUID is available without consultingt he broker so 
-    # marginally more efficient to use.
+    # Try and cull any forgotten tasks before starting this one.
+    # Adds a little start up overhead, and can be turned off by
+    # decorating with:
+    # @app.task(bind=True, base=Interactive, cull_forgotten_tasks=False)   
+    cull_forgotten_tasks = True
+
+    # Configuring the update mechanism
     #
-    # Can of course be configured in any function decorated with  @Interactive.Config
-    use_indexed_queue_names = True
-    
-    # The Queue object used for:
-    #    sending instructions to the running task - in the context of the Client
-    #    receiving instructions in the context of the Worker (task)
-    instruction_queue = None
-    
+    # 0 = Don't use this mechanism
+    # non-zero = higher of two breaks conflicts
+    #
+    # One or more need to be non-zero 
+    # If both are non-zero, the higher  one breaks any conflicts 
+    # (if  different updates are understood by checking each one).
+    update_via_backend = 1
+    update_via_broker  = 2
+
     # Define some standard strings used for prompts (Task -> Client) and
     # instructions  (Client -> Task).
     #
@@ -185,6 +191,7 @@ class InteractiveBase(Celery_Task):
     ASK_CONTINUE = "__continue?__"
     CONTINUE = "__continue__"
     ABORT = "__abort__"
+    DIE_CLEANLY = "__die_cleanly__"
 
     ASK_COMMIT = "__commit?__"
     COMMIT = "__commit__"
@@ -194,25 +201,148 @@ class InteractiveBase(Celery_Task):
     # Methods
     ############################################################################################    
     
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         # Add an instance of Django interfaces
         self.django = self.Django(self)
-    
+
+    def apply_async(self, args=None, kwargs=None, **options):
+        '''
+        Before we publish the task (send a request via the broker
+        to have a worker execute it) we want to create the queues
+        needed to interact with it and let the task (Task/Worker)
+        know the queue_name_root that we elected to use. 
+        
+        We need a task_id to do that, and we don't have one here yet
+        (though we could specify one). So we tap into the before_task_publish
+        signal that Celery issues, by which time we have a task_ID, and
+        patch the queue_name_root into the kwargs sent to the task there,
+        
+        We define the signal handler herein to hide it a level deeper
+        (so it's not visible as a method of Interactive), and keep it 
+        close to its functional context i.e. the signal fires just after
+        apply_async() is called, just before the message requesting the 
+        task to run is published.
+        
+        :param args:
+        :param kwargs:
+        '''
+        @before_task_publish.connect
+        def __create_queues__(sender, *args, **kwargs):
+            '''
+            The signal handler that creates queues just prior to 
+            the task request being published.
+            
+            :param sender: a string naming the task that is being published.
+            '''
+            # sender being the name only we fetch the task from the Celery
+            # registry. This is an instance of the task that we can use to
+            # use its create_queues() method. We might be able to use self
+            # from the embracing apply_async context
+            task = current_app.tasks[sender]
+ 
+            # To create Queues we need the task ID. This is delivered by the 
+            # before_task_publish signal in the headers. create_queues expects
+            # it in self.reques.id
+            task.request.id = kwargs["headers"]["id"] 
+
+            # Create the queues that we need (this also:
+            #  1) Establishes a queue name root (qnr)
+            #  2) Saves the qnr to management data
+            if task.update_via_broker:
+                # TODO: consider what meta data we might add to this status
+                #
+                # I think the PIDs of celery and it's pool workers is a good 
+                # thing to record with this state. 
+                #
+                # Stats are reported in three tiers:
+                #    key 1: node name - a node is one worker in a cluster. A cluster
+                #           may have many nodes. See:
+                #             https://stackoverflow.com/a/61316552/4002633
+                #             https://docs.celeryproject.org/en/latest/reference/celery.bin.multi.html#celery.bin.multi.MultiTool.MultiParser.Node
+                #           The name is not meaningful per se, and casn't be divined other than 
+                #           by looking at the keys of the stats dict. By default nodes are named 
+                #           as celery@hostname, or if more than one node in a cluster, celery1@hostname, 
+                #           celery2@hostname etc. But it can be configured when the worker is started.
+                #    key 2: 'pid' holds the worker PID and 'pool' holds a pool dict
+                #    key 3: 'processes' holds a list of PIDs of the pool processes for this node.
+                #
+                # We can capture all these PIDs in a single dir keyed on node PID with
+                # a list of Pool PIDs as the value. And that might be useful for us to guage
+                # stability of the worker pool. Or not. 
+                stats = current_app.control.inspect().stats()
+                
+                assert stats, "Celery appears to be down! Can't start I Interactive Tasks without Celery."
+                
+                PIDs = {}
+                for node in stats:
+                    PIDs[stats[node]['pid']] = stats[node]['pool']['processes']
+                
+                initial_status = ("REQUESTED", PIDs)
+                qnr = task.create_queues(initial_status)
+            else:
+                qnr = task.create_queues()
+            
+            # INFORM TASK/WORKER OF THE queue_name_root we are using
+            #
+            # Task/Worker has access to the management queue to double check
+            # this but we add it to the kwargs for the task as queue_name_root.
+            #
+            # That's the only Celery standard way there is to communicate 
+            # something to the task before it runs.
+            task_kwargs = kwargs["body"][1]
+            task_kwargs["queue_name_root"] = qnr
+            
+        # If we only want one instance of task running at time, 
+        # enforced this now before we publish the task (ask a 
+        # worker to run it).
+        #
+        # We know one is running if there an entry on the management
+        # queue already.
+        
+        if self.one_at_a_time:
+            # Note: the Kombu exchange has a persistent delivery mode by default.
+            #       meaning messages are stored in memory and on disk and survive
+            #       server or Celery restarts.
+            #
+            #       See: "delivery_mode" and "durable" in
+            #       https://docs.celeryproject.org/projects/kombu/en/stable/reference/kombu.html 
+            #
+            #       But, while the message survives the running worker likely does 
+            #       not and so we might have to be more rigorous here. Tools we have 
+            #       available for greater rigour include:
+            #
+            #       app.control.inspect().active()
+            #
+            #       which returns a dict of all running (active) tasks, We can cross
+            #       check if it's already running against this to boost confidence.
+            #
+            #       app.control.inspect().stats()
+            #
+            #       reveals the PIDs of Celery and all its workers. We could save 
+            #       these in management data as well, and when its returned compare 
+            #       the PIDs. If they are the same as before our trust in the lock 
+            #       rises some more.
+            already_running = self.get_management_data()
+            if already_running:
+                raise self.Exceptions.AlreadyRunning
+            
+        return super().apply_async(args, kwargs, **options)
+   
     def start(self, *args, **kwargs):
         '''
-        A wrapper around self.delay() that takes note of the task_id so that the 
-        Task/Client instance of Task has it in the same attribute as Task/Worker.
-        Not especially useful unless you are starting an instance of Task and
-        doing something after starting it and prefer to access self.request.id
-        in place of result.task_id.
+        A wrapper around self.delay()
         '''
-        result = self.delay(args, kwargs)
-        self.request.id = result.task_id
+        #result = self.delay(*args, **kwargs)
+        result = self.apply_async(args=args, kwargs=kwargs)
         return result
     
     @property
     def shortname(self):
         return self.name.split('.')[-1]
+
+    @property
+    def fullname(self):
+        return f"{self.shortname} -> {self.name} with id: {self.request.id}"
                     
     def progress(self, percent=0, current=0, total=0, description="", result=""):
         '''
@@ -242,6 +372,8 @@ class InteractiveBase(Celery_Task):
     
     def please_continue(self):
         '''
+        Called by Task/Client
+        
         Sends an instruction to continue to the task. Requires that the task have
         request.id to identify the running instance of the task which is used as
         a routing_key.
@@ -254,6 +386,8 @@ class InteractiveBase(Celery_Task):
 
     def please_abort(self):
         '''
+        Called by Task/Client
+
         Sends an instruction to abort to the task. Requires that the task have
         request.id to identify the running instance of the task which is used as
         a routing_key.
@@ -281,6 +415,8 @@ class InteractiveBase(Celery_Task):
 
     def please_commit(self):
         '''
+        Called by Task/Client
+
         Sends an instruction to commit to the task. Requires that the task have
         request.id to identify the running instance of the task which is used as
         a routing_key.
@@ -294,6 +430,8 @@ class InteractiveBase(Celery_Task):
 
     def please_rollback(self):
         '''
+        Called by Task/Client
+
         Sends an instruction to rollback to the task. Requires that the task have
         request.id to identify the running instance of the task which is used as
         a routing_key.
@@ -315,7 +453,7 @@ class InteractiveBase(Celery_Task):
         
         :param progress:
         '''
-        self.update_state(state="PROGRESS", meta={'progress': progress})
+        self.send_update(state="PROGRESS", meta={'progress': progress})
         if check_for_abort:
             self.check_for_abort()
 
@@ -348,7 +486,10 @@ class InteractiveBase(Celery_Task):
         else:
             assert instruction == self.COMMIT, f"Invalid instruction {instruction} received by wait_for_continue_or_abort()"
             return instruction
-            
+
+    # TODO: support a PAUSE instruction which when sent will, if enabled
+    # cause a blocking check which waits for a continue instruction.
+    # This should support a PAUSE button on the progress bar that just sees the task pause.
     def check_for_abort(self, progress=None, result=None): 
         '''
         Checks for an instruction and if it's an abort instruction will 
@@ -369,7 +510,29 @@ class InteractiveBase(Celery_Task):
         else:
             return instruction
 
+    def die_cleanly(self):
+        '''
+        Called by Task/Worker. 
+
+        The task should clean up the queues it was using (i.e. the client has abandoned that 
+        job) and then terminate. This is reserved for instances where a task is waiting on
+        user input for example, and never receives it. It sits around forever. But an effort
+        to clean up zombies (tasks in this lost state) can send them a DIE_CLEANLY insttuction
+        and the task on receiving it can call this to do that.
+        '''
+        self.send_update(state="KILLED")
+        self.delete_queues()
+        raise self.Exceptions.Killed
+
     def abort(self, progress=None, result='unfinished result'):
+        '''
+        Called by Task/Worker. 
+        
+        The task should abort.
+        
+        :param progress: latest progress if any.
+        :param result:   latest result if any. 
+        '''
         # If no progress indicator is provided use the last one that self.progress 
         # was used for. Because this is called by the running task instance it has
         # persistence during execution and self._progress is up to date.
@@ -377,10 +540,18 @@ class InteractiveBase(Celery_Task):
             progress = self._progress
             
         progress['description'] = f"Aborted"
-        self.update_state(state="ABORTED", meta={'result': result, 'progress': progress})
+        self.send_update(state="ABORTED", meta={'result': result, 'progress': progress})
         raise self.Exceptions.Abort
 
     def rollback(self, progress=None, result='unfinished result'):
+        '''
+        Called by Task/Worker. 
+        
+        The task should roll back any open transaction it has.
+        
+        :param progress: latest progress if any.
+        :param result:   latest result if any. 
+        '''
         # If no progress indicator is provided use the last one that self.progress 
         # was used for. Because this is called by the running task instance it has
         # persistence during execution and self._progress is up to date.
@@ -390,7 +561,7 @@ class InteractiveBase(Celery_Task):
         progress['description'] = f"Rolledback"
         meta = {'result': result, 'progress': progress}
         
-        self.update_state(state="ROLLEDBACK", meta=meta)
+        self.send_update(state="ROLLEDBACK", meta=meta)
         raise self.Exceptions.Rollback
 
     ############################################################################################    
@@ -399,27 +570,23 @@ class InteractiveBase(Celery_Task):
     # BEGINNING of DJANGO INTERFACE
     ############################################################################################    
 
-    # Group the DJango specific decorator and view functions.
-    
-    @classmethod
-    def Config(cls, config_function):
-    
-        # See https://docs.celeryproject.org/en/stable/userguide/signals.html
-        @before_task_publish.connect
-        def config(sender, *args, **kwargs):
-            task = current_app.tasks[sender]
-            config_function(task, *args, **kwargs)
-            task.monitor_title = getattr(task, "monitor_title", getattr(task, "initial_monitor_title"))
-        
-        return config
-
     # Include the Django subclass
+    
+    from .django import Django
     Django = Django
 
     class Exceptions:
 
         class Abort(Ignore):
             """A task can raise this to Abort execution.
+            
+               It does nothing more than request Celery to ignore the 
+               task from here on in (not send an update to state to
+               to the client).
+            """
+            
+        class Killed(Ignore):
+            """A task can raise this if asked to die cleanly.
             
                It does nothing more than request Celery to ignore the 
                task from here on in (not send an update to state to
@@ -451,3 +618,8 @@ class InteractiveBase(Celery_Task):
                the next transaction.
             """
             
+        class AlreadyRunning(Exception):
+            '''
+            An exception thrown only if one_at_a_time is True and an
+            instance of this task is already seen to be running.
+            '''

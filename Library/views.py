@@ -501,7 +501,7 @@ def TimeTestView(request):  # PyDev @UnusedVariable
     
     return HttpResponse(html)
 
-from .celery import debug_task
+#from .celery import debug_task
 
 def CeleryTestView(request): # PyDev @UnusedVariable
     '''

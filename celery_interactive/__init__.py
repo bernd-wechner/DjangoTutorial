@@ -254,7 +254,11 @@ standard Backend provided by Celery:
         https://docs.celeryproject.org/en/stable/faq.html#results
 """
 
-__all__ = ['config', 'base', 'kombu', 'django']
+__author__ = 'Bernd Wechner'
+__email__ = 'bwechner@yahoo.com'
+__version__ = '0.1'
+
+__all__ = ['config', 'base', 'celery', 'kombu', 'django', 'context', 'decorators']
 
 # Import the Interactive class from the kombu module
 from .kombu import Interactive

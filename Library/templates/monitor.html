@@ -8,24 +8,27 @@
 	<H1>{{title}}</H1>
 	
 	<p>
-	<label for="pulse-check-progress-bar">Progress:</label>
-		<div id='pulse-check-progress-bar'>&nbsp;</div>
+	<label id='pulse-check-step-bar-label' for="pulse-check-step-bar">Progress:</label>
+		<div id='pulse-check-step-bar'>&nbsp;</div>
 	</p>
 		
 	<p>
-	<label for="pulse-check-message">Message:</label>
-		<span id='pulse-check-message'></span>
+	<label id='pulse-check-status-label' for="pulse-check-status">Message:</label>
+		<span id='pulse-check-status'></span>
 	</p>
 		
 	<p><button onclick='PC.cancel(this);'>Cancel</button></p>
 
 	<p>
-	<label for="pulse-check-result">Result:</label>
+	<label id="pulse-check-result-label" for="pulse-check-result">Result:</label>
 		<span id="pulse-check-result"></span>
 	</p>		
 </body>
 	
 <script>
-	PC = new PulseChecker("{% url 'tm-book-add-save-pulse' %}", {taskId: "{{id}}", progressBar: true})
+	PC = new PulseChecker("{% url 'tm-book-add-save-pulse' %}", 
+						   {taskId: "{{id}}", 
+						    stepBar: true, 
+						    prefixStatus: true })
 	PC.start()
 </script> 

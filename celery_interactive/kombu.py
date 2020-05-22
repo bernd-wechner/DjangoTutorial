@@ -5,11 +5,10 @@ from kombu import Connection, Queue, Exchange, Producer, Consumer
 
 from amqp.exceptions import NotFound
 
+from . import log
 from .base import InteractiveBase
-from .config import debug, logger
 from .context import ManagementQueue, InteractiveExchange, augment_queue
 from .decorators import ConnectedCall
-
 
 class Interactive(InteractiveBase):
     '''
@@ -86,7 +85,7 @@ class Interactive(InteractiveBase):
     update_queue = None         # Named using queue_name_root
     
     def __init__(self, *args, **kwargs):
-        super().__init__()
+        super().__init__(*args, **kwargs)
         
         # See https://celery.readthedocs.io/en/latest/userguide/tasks.html#list-of-options
         #
@@ -176,7 +175,7 @@ class Interactive(InteractiveBase):
                 exists = False
             except Exception as E:
                 exists = False
-                logger.error(f"Unexpected exception from Channel.queue_declare(): {E}")
+                log.error(f"Unexpected exception from Channel.queue_declare(): {E}")
                     
         return exists    
     
@@ -290,30 +289,30 @@ class Interactive(InteractiveBase):
         
         Returns: the queue name root used.
         '''
-        logger.debug(f'Creating Queues for: {self.fullname}')
-        logger.debug(f'\tBroker: {current_app.conf.broker_url}')
+        log.debug(f'Creating Queues for: {self.fullname}')
+        log.debug(f'\tBroker: {current_app.conf.broker_url}')
         
         with Connection(current_app.conf.broker_url) as conn:
             try:
                 # Connection is lazy. Force a connection now.
                 conn.connect()
                 c = conn.connection
-                logger.debug(f'\tConnection: {self.connection_names(c)[1]}')
+                log.debug(f'\tConnection: {self.connection_names(c)[1]}')
 
                 # Create a channel on the connection and log it in the RabbitMQ webmonitor format
                 ch = c.channel()
-                logger.debug(f'\tChannel: {self.channel_names(ch)[1]}')
+                log.debug(f'\tChannel: {self.channel_names(ch)[1]}')
                 
                 # Create or get the exchange
                 x = Exchange(self.exchange_name, channel=ch, durable=True)
                 x.declare() # Makes the exchange appears on the RabbitMQ web monitor
-                logger.debug(f'\tExchange: {x.name}')
+                log.debug(f'\tExchange: {x.name}')
 
                 # Ensure the management queue exists before we do anything else     
                 # kill zombies() expects to find it in place.            
                 q = Queue(self.name, exchange=x, channel=ch, routing_key=self.management_key(), durable=True)
                 q.declare() # Makes the queue appears on the RabbitMQ web monitor
-                logger.debug(f'\tManagement Queue: {q.name}')
+                log.debug(f'\tManagement Queue: {q.name}')
                 self.management_queue = augment_queue(q)
                 
                 # Kill any zombie queues first
@@ -339,11 +338,11 @@ class Interactive(InteractiveBase):
                         q.declare() # Makes the queue appears on the RabbitMQ web monitor
 
                         if k == self.instruction_key() and initial_status:
-                            logger.debug(f'\tInstruction Queue: {q.name}')
+                            log.debug(f'\tInstruction Queue: {q.name}')
                             self.instruction_queue = augment_queue(q)
     
                         elif k == self.update_key():
-                            logger.debug(f'\tUpdate Queue: {q.name}')
+                            log.debug(f'\tUpdate Queue: {q.name}')
                             self.update_queue = augment_queue(q)
                             
                             if initial_status:
@@ -365,7 +364,7 @@ class Interactive(InteractiveBase):
                                     p.publish(initial_status)
                             
             except Exception as e:
-                logger.error(f'QUEUE CREATION ERROR: {e}')
+                log.error(f'QUEUE CREATION ERROR: {e}')
                 
             return qname_root
 
@@ -383,15 +382,15 @@ class Interactive(InteractiveBase):
                 # Connection is lazy. Force a connection now.
                 conn.connect()
                 c = conn.connection
-                logger.debug(f'\tConnection: {self.connection_names(c)[1]}')
+                log.debug(f'\tConnection: {self.connection_names(c)[1]}')
 
                 # Create a channel on the connection and log it in the RabbitMQ webmonitor format
                 ch = c.channel()
-                logger.debug(f'\tChannel: {self.channel_names(ch)[1]}')
+                log.debug(f'\tChannel: {self.channel_names(ch)[1]}')
                 
                 # Create or get the exchange
                 x = Exchange(self.exchange_name, channel=ch)
-                logger.debug(f'\tExchange: {x.name}')
+                log.debug(f'\tExchange: {x.name}')
 
                 # Get the queue name root from management data 
                 if not queue_name_root:
@@ -399,7 +398,7 @@ class Interactive(InteractiveBase):
                     if not queue_name_root:
                         queue_name_root = self.get_management_data()
                         if not queue_name_root:
-                            logger.debug(f'Delete Queues: Request to delete queues cannot be fulfilled for lack of a queue root name,')
+                            log.debug(f'Delete Queues: Request to delete queues cannot be fulfilled for lack of a queue root name,')
                 
                 if queue_name_root:
                     # And the queue names
@@ -411,10 +410,10 @@ class Interactive(InteractiveBase):
                         if not k == self.management_key():
                             q = Queue(qname, channel=ch, no_declare=True)
                             q.delete()
-                            logger.debug(f'Deleted Queue: {q.name}')
+                            log.debug(f'Deleted Queue: {q.name}')
                         
             except Exception as e:
-                logger.error(f'QUEUE DELETION ERROR: {e}')
+                log.error(f'QUEUE DELETION ERROR: {e}')
     
     def kill_zombies(self):
         '''
@@ -436,11 +435,11 @@ class Interactive(InteractiveBase):
                     
         managed_ids = set(mgmt_data.keys()) if mgmt_data else set()
         
-        logger.debug(f'Zombie Search, active ids: {active_ids}')
-        logger.debug(f'Zombie Search, managed ids: {managed_ids}')
-        logger.debug(f'Zombie Search, happy with: {active_ids & managed_ids}')
-        logger.debug(f'Zombie Search, will delete from management data: {managed_ids - active_ids}')
-        logger.debug(f'Zombie Search, will cull from active tasks: {active_ids - managed_ids}')
+        log.debug(f'Zombie Search, active ids: {active_ids}')
+        log.debug(f'Zombie Search, managed ids: {managed_ids}')
+        log.debug(f'Zombie Search, happy with: {active_ids & managed_ids}')
+        log.debug(f'Zombie Search, will delete from management data: {managed_ids - active_ids}')
+        log.debug(f'Zombie Search, will cull from active tasks: {active_ids - managed_ids}')
 
         # Any tasks being managed but not active are not needed in in management data
         # But they may have left zombie queues lying around. So we look for and delete the
@@ -477,9 +476,9 @@ class Interactive(InteractiveBase):
                         # In mean time must specify content encoding explicitly
                         x.publish(self.DIE_CLEANLY, routing_key=self.instruction_key(task_id), content_encoding='utf-8')
             except Exception as e:
-                logger.error(f'ZOMBIE KILL ERROR: {e}')
+                log.error(f'ZOMBIE KILL ERROR: {e}')
                 
-        logger.debug(f'Zombie Kill Done.')
+        log.debug(f'Zombie Kill Done.')
     
     def connection_names(self, connection):
         '''
@@ -537,10 +536,10 @@ class Interactive(InteractiveBase):
         my_qnr = queue_name_root if queue_name_root else getattr(self, "queue_name_root", None)
         
         if not my_qnr:
-            logger.error(f'Interactive queue name root missing!')
+            log.error(f'Interactive queue name root missing!')
             return
         
-        logger.debug(f'Setting interactive management data: {self.fullname}')
+        log.debug(f'Setting interactive management data: {self.fullname}')
         
         with ManagementQueue(self) as q:
             try:
@@ -548,22 +547,22 @@ class Interactive(InteractiveBase):
                 
                 if mgmt_mesg:
                     mgmt_data = mgmt_mesg.payload
-                    logger.debug(f'\tExisting Management Data: {mgmt_data}')
+                    log.debug(f'\tExisting Management Data: {mgmt_data}')
 
                     if isinstance(mgmt_data, dict):
                         mgmt_mesg.ack()
                         mgmt_data[my_id] = my_qnr
                     else:
                         mgmt_mesg.reject()
-                        logger.error(f'Interactive management data is corrupt!')
+                        log.error(f'Interactive management data is corrupt!')
                 else:
                     mgmt_data = {my_id: my_qnr}
                 
                 q.publish(mgmt_data)
-                logger.debug(f'\tNew Management Data: {mgmt_data}')
+                log.debug(f'\tNew Management Data: {mgmt_data}')
                 
             except Exception as e:
-                logger.error(f'SET MANAGEMENT DATA ERROR: {e}')
+                log.error(f'SET MANAGEMENT DATA ERROR: {e}')
     
     def get_management_data(self, all=False):  # @ReservedAssignment
         '''
@@ -572,7 +571,7 @@ class Interactive(InteractiveBase):
         '''
         my_id = self.request.id
         
-        logger.debug(f'Getting interactive management data: {self.fullname}')
+        log.debug(f'Getting interactive management data: {self.fullname}')
         
         with ManagementQueue(self) as q:
             try:
@@ -581,7 +580,7 @@ class Interactive(InteractiveBase):
                 if mgmt_mesg:
                     mgmt_data = mgmt_mesg.payload
                     mgmt_mesg.requeue()
-                    logger.debug(f'\tManagement Data: {mgmt_data}')
+                    log.debug(f'\tManagement Data: {mgmt_data}')
                     
                     if isinstance(mgmt_data, dict):
                         if all:
@@ -589,14 +588,14 @@ class Interactive(InteractiveBase):
                         else:
                             return mgmt_data.get(my_id, None)
                     else:
-                        logger.error(f'Interactive management data is corrupt!')
+                        log.error(f'Interactive management data is corrupt!')
                 else:
-                    logger.warning(f'Interactive management data was missing.')
+                    log.warning(f'Interactive management data was missing.')
                     q.publish({})
                     return {}
                 
             except Exception as e:
-                logger.error(f'GET MANAGEMENT DATA ERROR: {e}')
+                log.error(f'GET MANAGEMENT DATA ERROR: {e}')
     
     def del_management_data(self, task_ids=None):
         '''
@@ -605,7 +604,7 @@ class Interactive(InteractiveBase):
         '''
         my_id = self.request.id
         
-        logger.debug(f'Deleting interactive management data: {self.fullname}')
+        log.debug(f'Deleting interactive management data: {self.fullname}')
         
         with ManagementQueue(self) as q:
             try:
@@ -613,7 +612,7 @@ class Interactive(InteractiveBase):
                 
                 if mgmt_mesg:
                     mgmt_data = mgmt_mesg.payload
-                    logger.debug(f'\tExisting Management Data: {mgmt_data}')
+                    log.debug(f'\tExisting Management Data: {mgmt_data}')
 
                     if isinstance(mgmt_data, dict):
                         mgmt_mesg.ack()
@@ -625,15 +624,15 @@ class Interactive(InteractiveBase):
                             mgmt_data.pop(my_id, None)
                     else:
                         mgmt_mesg.reject()
-                        logger.error(f'Interactive management data is corrupt!')
+                        log.error(f'Interactive management data is corrupt!')
                 else:
                     mgmt_data = {}
                 
                 q.publish(mgmt_data)
-                logger.debug(f'\tNew Management Data: {mgmt_data}')
+                log.debug(f'\tNew Management Data: {mgmt_data}')
                 
             except Exception as e:
-                logger.error(f'DEL MANAGEMENT DATA ERROR: {e}')
+                log.error(f'DEL MANAGEMENT DATA ERROR: {e}')
 
     @ConnectedCall
     def __call__(self, *args, **kwargs):
@@ -641,106 +640,6 @@ class Interactive(InteractiveBase):
         # TODO: We could check if it or isn't and insert self only if bound.
         return self.run(self, *args, **kwargs)
 
-#     def __call__ORIG(self, *args, **kwargs):
-#         '''
-#         This is the entry point for Task.delay() or Task.apply_async(). We can (in fact MUST)
-#         call Task.run()  to run the actual Task decorated function. But we wrap that here 
-#         around the connection required to support Interactive communications.
-#         '''
-#         # This is what super().__call does to wind up. So we do it it here too.
-#         _task_stack.push(self)
-#         self.push_request(args=args, kwargs=kwargs)
-#             
-#         my_id = self.request.id
-#         
-#         logger.debug(f'Interactive task: {self.fullname}')
-# 
-#         logger.debug(f'Got {len(args)} args:')
-#         for v in args:
-#             logger.debug(f'\t{v}')
-#         
-#         logger.debug(f'Got {len(kwargs)} kwargs:')
-#         for k, v in kwargs.items():
-#             logger.debug(f'\t{k}: {v}')
-#         
-#         # First configure the queue names
-#         qname_root = kwargs.get("queue_name_root", self.default_queue_name_root())
-#         qnames = self.queue_names(qname_root)
-#         management_queue_name = qnames[self.management_key()]
-#         instruction_queue_name = qnames[self.instruction_key()]
-#         
-#         # A unique string to flag this result should be ignored.
-#         # It should simply have no chance of overlapping with an
-#         # actual task result. So we throw in a uuid for good measure.
-#         # We do this so thatw e can catch the Ignore exception, to
-#         # cleanly destroy the Queue this task was using before the 
-#         # final exit. 
-#         IGNORE_RESULT = f"__ignore_this_result__{uuid.uuid1()}"
-# 
-#         logger.debug(f'Connecting task to: {current_app.conf.broker_url}')
-#          
-#         # Wrap the task in a connection (used for both reading from a instruction queue
-#         # and writing to an updates queue if configured to.
-#         with Connection(current_app.conf.broker_url) as conn:
-#             try:
-#                 # Connection is lazy. Force a connection now.
-#                 conn.connect()
-# 
-#                 c = conn.connection
-#                 logger.debug(f'\tConnection: {self.connection_names(c)[1]}')
-# 
-#                 # Create a channel on the connection and log it in the RabbitMQ webmonitor format                     
-#                 ch = c.channel()
-#                 logger.debug(f'\tChannel: {self.channel_names(ch)[1]}')
-# 
-#                 # Attach to the management queue (for managing interactions)
-#                 self.management_queue = Queue(management_queue_name, channel=ch, no_declare=True)
-#                 logger.debug(f'\tManagement Queue: {self.management_queue.name}')
-#                 
-#                 # Attach to the instruction queue (for reading instructions)
-#                 self.instruction_queue = Queue(instruction_queue_name, channel=ch, no_declare=True)
-#                 logger.debug(f'\tInstruction Queue: {self.instruction_queue.name}')
-# 
-#                 if update_via_broker:
-#                     # Attach to the update queue (for sending instructions)
-#                     x = Exchange(self.exchange_name, channel=ch)
-#                     k = self.update_key()
-#                     self.update_queue = Producer(channel=ch, exchange=x, routing_key=k)
-#                     logger.debug(f'\tUpdate Queue: {self.update_queue.exchange.name} -> {self.update_queue.routing_key}')
-# 
-#                 # Before calling the decorated function report that we're STARTED and
-#                 # provide the PID of the Worker Pool Process we're running in. 
-#                 self.update_state(state="STARTED", meta={'pid': os.getpid()})
-#                 
-#                 result = self.run(self, *args, **kwargs)
-# 
-#                 # Leave the exchange alone (it's reusable for other Interactive tasks)
-#             except Ignore:
-#                 result = IGNORE_RESULT
-#             except Exception as e:
-#                 logger.error(f'TASK __CALL__ ERROR: {e}')
-#                 self.update_state(state="FAILURE", meta={'result': 'result to date', 'reason': str(e)})
-#                 result = None
-#             finally:
-#                 # This is what super().__call does to unwind. So we do it it too.
-#                 self.pop_request()
-#                 _task_stack.pop()
-#                 
-#                 
-#             # Any wind down code could go here.
-#             #
-#             # The Queues however we don't delete here (in Task/Worker) we 
-#             # let Task/Client do that when it gets the result or a notice
-#             # from Celery that this task failed. This is robust against cases
-#             # where the worker dies hard, but Celery is up (maybe again after
-#             # dying hard as well) and the AsyncRestul against this tasks_id
-#             # reveals it's not running any more.
-# 
-#         if result == IGNORE_RESULT:
-#             raise Ignore() 
-#             
-#         return result
-#         
     def instruct(self, instruction):
         '''
         Given an instance of celery.Task (self) and an instruction will,
@@ -752,11 +651,11 @@ class Interactive(InteractiveBase):
         
         :param instruction: The instruction to send (a string is ideal but kombu has to be able to serialize it)
         '''
-        logger.debug(f'Sending Instruction: {instruction} -> {self.request.id}')
+        log.debug(f'Sending Instruction: {instruction} -> {self.request.id}')
         
         self.instruction_queue.publish(instruction)
     
-        logger.debug(f'\tSent: {instruction} to exchange {self.instruction_queue.exchange.name} with routing key {self.instruction_queue.routing_key}')
+        log.debug(f'\tSent: {instruction} to exchange {self.instruction_queue.exchange.name} with routing key {self.instruction_queue.routing_key}')
     
     def check_for_instruction(self):
         '''
@@ -768,15 +667,14 @@ class Interactive(InteractiveBase):
         q = getattr(self, 'instruction_queue', None)
         assert isinstance(q, Queue),  "A Queue must be provided via self.instruction_queue to check for abort messages."
 
-        if debug:
-            logger.debug(f'CHECKING queue "{q.name}" for an instruction.')
+        log.debug(f'CHECKING queue "{q.name}" for an instruction.')
             
         try:
             message = q.get()
         except Exception as E:
             # TODO: Diagnose why my Queue dies, if it does ... 
             message = None
-            logger.error(f'Error checking {getattr(q, "name")}: {E}')
+            log.error(f'Error checking {getattr(q, "name")}: {E}')
 
         if message:            
             instruction = message.payload       # get an instruction if available
@@ -789,7 +687,7 @@ class Interactive(InteractiveBase):
         else:
             return None
     
-    def wait_for_instruction(self, prompt=None, interim_result=None, continue_monitoring=None):
+    def wait_for_instruction(self, prompt=None, continue_monitoring=None):
         '''
         Performs a blocking read on self.instruction_queue 
         (i.e. waits for an instruction).
@@ -799,14 +697,6 @@ class Interactive(InteractiveBase):
                        it wants, prompt a user (by whatever means it can) 
                        to provide an instruction.
                        
-        :param interim_result: Optionally an interim result that the View
-                               can present to the user if desired. A task 
-                               returns a result when it's complete, but 
-                               if it enters into a wait for instructions
-                               it may have an interim result that it wants 
-                               feedback on (classically the case for a 
-                               commit or rollback request).  
-
         :param continue_monitoring: If a string is provided will be 
         '''
         q = getattr(self, 'instruction_queue', None)
@@ -819,11 +709,11 @@ class Interactive(InteractiveBase):
             instruction = body  # Not really an @UnusedVariable
             message.ack()
         
-        meta = {'prompt': prompt, 'interim_result': interim_result, 'continue_monitoring': continue_monitoring}
+        meta = {'prompt': prompt, 'progress': self.progress.as_dict(), 'continue_monitoring': continue_monitoring}
         self.send_update(state="WAITING", meta=meta)
         
-        logger.debug(f'Updated status to WAITING with info: {meta}')
-        logger.debug(f'WAITING for an instruction ... (listening to queue: {q.name})')
+        log.debug(f'Updated status to WAITING with info: {meta}')
+        log.debug(f'WAITING for an instruction ... (listening to queue: {q.name})')
             
         ch = q.exchange.channel
         c = ch.connection
@@ -831,7 +721,7 @@ class Interactive(InteractiveBase):
             # drain_events blocks until a message arrives then got_messag() is called.  
             c.drain_events()
         
-        logger.info(f'RECEIVED instruction: {instruction}')
+        log.info(f'RECEIVED instruction: {instruction}')
         
         if instruction == self.DIE_CLEANLY:
             self.die_cleanly()
@@ -852,14 +742,14 @@ class Interactive(InteractiveBase):
         :param meta:  A dictionary (with string keys) containing extra information for the update
         '''
         if self.update_via_backend:
-            logger.debug(f'Updating State, state:{state}, meta: {meta}')
+            log.debug(f'Updating State, state:{state}, meta: {meta}')
             self.update_state(state=state, meta=meta)
             
         if self.update_via_broker:
-            logger.debug(f'Sending Update: {self.request.id} -> {state}, {meta}')
+            log.debug(f'Sending Update: {self.request.id} -> {state}, {meta}')
             m = (state, meta)
             self.update_queue.publish(m)
-            logger.debug(f'\tSent: {m} to exchange {self.update_queue.exchange.name} with routing key {self.update_queue.routing_key}')
+            log.debug(f'\tSent: {m} to exchange {self.update_queue.exchange.name} with routing key {self.update_queue.routing_key}')
 
     class Result:
         '''
@@ -873,8 +763,10 @@ class Interactive(InteractiveBase):
         
         The info/result/meta story:
             AsyncResult supports a result and info attribute that are identical.
-            update_state takes a meta kwarg, which is used to popular result/info
-            So we support all three names in this masquerade.
+            Celery's update_state takes a meta kwarg, which is used to populate 
+            result/info. So we support all three names in this masquerade.
+            
+            They are in Celery terms synonyms in the AsyncResult object. 
         '''
         state = status = None
         info = result = meta = None
@@ -928,12 +820,12 @@ class Interactive(InteractiveBase):
             task_id = self.request.id
 
         if task_id:            
-            logger.debug(f'Fetching updates from: {self.fullname}')
+            log.debug(f'Fetching updates from: {self.fullname}')
     
             if self.update_via_backend:
                 r = AsyncResult(task_id)
                 backend_update = self.Result(r.state, getattr(r, 'info', None))
-                logger.debug(f'\tBackend update: {backend_update.state}, {backend_update.info}')
+                log.debug(f'\tBackend update: {backend_update.state}, {backend_update.info}')
     
             if self.update_via_broker:
                 messages = []
@@ -946,7 +838,7 @@ class Interactive(InteractiveBase):
                     except Exception as E:
                         # TODO: Diagnose why my Queue dies, if it does ... 
                         message = None
-                        logger.error(f'Error checking update queue, {self.update_queue.name}: {E}')
+                        log.error(f'Error checking update queue, {self.update_queue.name}: {E}')
                     
                     if message:
                         messages.append(message)
@@ -954,7 +846,7 @@ class Interactive(InteractiveBase):
                         # The payload is a 2-tuple containing state and info
                         result = self.Result(*payload)
                         broker_updates.append(result)
-                        logger.debug(f'\tBroker update: {result.status}, {result.info}')
+                        log.debug(f'\tBroker update: {result.status}, {result.info}')
                     else:
                         break
                     
@@ -976,12 +868,12 @@ class Interactive(InteractiveBase):
                 if broker_updates:
                     # All is good if the backend update agrees with the last broker update
                     if backend_update == broker_updates[-1]:
-                        logger.debug(f'\tBackend and Broker agree.')
+                        log.debug(f'\tBackend and Broker agree.')
                         return broker_updates
                     else:
                         # If we are prioritising the broker ignore the backend result and return the brokers
                         if self.update_via_broker > self.update_via_backend:
-                            logger.debug(f'\tBackend and Broker disagree. Broker is prioritised')
+                            log.debug(f'\tBackend and Broker disagree. Broker is prioritised')
                             return broker_updates
                         # Otherwise if we are priortising the backend then
                         # return both the broker and backend results but put backend's 
@@ -991,14 +883,14 @@ class Interactive(InteractiveBase):
                         # namely because of Celery's retaining only the last update)
                         else:
                             broker_updates.append(backend_update)
-                            logger.debug(f'\tBackend and Broker disagree. Backend is prioritised.')
+                            log.debug(f'\tBackend and Broker disagree. Backend is prioritised.')
                             return broker_updates
                 else:
                     # This means we didn't persist the update. We should persist it and check 
                     # the persisted one against the AsynchResult (backend_update. 
-                    logger.debug(f"get_updates: INTERNAL ERROR. No broker update in Queue. One should always be on the Queue.") 
+                    log.debug(f"get_updates: INTERNAL ERROR. No broker update in Queue. One should always be on the Queue.") 
                             
             return broker_updates
         else:
-            logger.debug(f"get_updates: No task_id provided or found in self.request.id")
+            log.debug(f"get_updates: No task_id provided or found in self.request.id")
             return [] 

@@ -10,7 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/1.11/ref/settings/
 """
 
-import os
+import os, sys
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -140,3 +140,39 @@ STATIC_URL = "/static/"
 # And this does:
 
 CELERY_RESULT_EXTENDED = True
+
+
+# Configure logging
+from .logging import RelativeFilter
+
+log_format = '%(prefix)s%(relativeReference)9.4f, %(relativeLast)9.4f, %(filename)20s:%(lineno)4d, %(funcName)20s - %(message)s%(postfix)s'
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': { 'default': { 'format': log_format } },
+    'filters': { 'relative': { '()': RelativeFilter } },        
+    'handlers':
+         { 'console': 
+            {'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'stream': sys.stdout,  # Optional but forces text black, without this DEBUG text is red.
+            'formatter': 'default',
+            'filters': ['relative']
+            }
+         },
+     'loggers':
+        { 'default': 
+            { 'handlers': ['console'], 
+              'level': os.getenv('DJANGO_LOG_LEVEL', 'DEBUG'),
+              'propagate': False 
+            }, 
+          'celery_interactive': 
+            { 'handlers': ['console'], 
+              'level': os.getenv('DJANGO_LOG_LEVEL', 'DEBUG'),
+              'propagate': False 
+            }            
+            
+        }
+}
+

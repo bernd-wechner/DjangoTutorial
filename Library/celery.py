@@ -1,14 +1,12 @@
 # A simple Celery Turorial based on:
 #  http://docs.celeryproject.org/en/latest/django/first-steps-with-django.html
 from celery import Celery
-from celery.utils.log import get_logger
+#from celery.utils.log import get_logger
 import os
 import time
 
 from celery_interactive import Interactive
 from django.db import transaction
-
-logger = get_logger(__name__)
 
 # set the default Django settings module for the 'celery' program.
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'DjangoTutorial.settings')
@@ -23,6 +21,11 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 
 # Load task modules from all registered Django app configs.
 app.autodiscover_tasks()
+
+import logging
+log = logging.getLogger('celery_interactive')
+
+#logger = get_logger(__name__)
 
 # @app.task(bind=True)
 # def debug_task(self):
@@ -40,12 +43,12 @@ app.autodiscover_tasks()
 # @app.task(base=Interactive, bind=True)
 # @transaction.atomic
 # def debug_interactive_task(self, *args, **kwargs):
-#     logger.info(f'XDEBUG debug_interactive_task, starting with {args} and {kwargs}')
+#     log.info(f'XDEBUG debug_interactive_task, starting with {args} and {kwargs}')
 #     test_confirm = kwargs.get("test_confirm", args[0] if args else False)
 #     
 #     n = 10
 #     for i in range(n):
-#         logger.info(f'XDEBUG debug_interactive_task, Working... {i+1} of {n}')
+#         log.info(f'XDEBUG debug_interactive_task, Working... {i+1} of {n}')
 #         
 #         progress = self.progress(100*(i+1)/n, i+1, n, f"Description number {i+1}")
 # 
@@ -55,33 +58,33 @@ app.autodiscover_tasks()
 #         instruction = self.check_for_abort()
 # 
 #         if instruction:
-#             logger.info(f'XDEBUG debug_interactive_task, Instructed to: "{instruction}"')
+#             log.info(f'XDEBUG debug_interactive_task, Instructed to: "{instruction}"')
 #         
 #         time.sleep(1) 
 #     
 #     if test_confirm:
-#         logger.info(f'XDEBUG debug_interactive_task, Waiting for Confirmation ...')
+#         log.info(f'XDEBUG debug_interactive_task, Waiting for Confirmation ...')
 # 
 #         # Confirmation request
 #         instruction = self.wait_for_instruction(self.ASK_CONFIRM, "This is an interim result")
 #         
 #         if instruction == self.COMMIT:
-#             logger.info(f'XDEBUG debug_interactive_task, COMMITING.')
+#             log.info(f'XDEBUG debug_interactive_task, COMMITING.')
 #             return f'final result: COMMIT'
 #         elif instruction == self.ROLLBACK:
-#             logger.info(f'XDEBUG debug_interactive_task, ROLLING BACK.')
+#             log.info(f'XDEBUG debug_interactive_task, ROLLING BACK.')
 #             raise self.Exceptions.Rollback
 #         else:
-#             logger.info(f'XDEBUG debug_interactive_task, ROLLING BACK (implicitly).')
+#             log.info(f'XDEBUG debug_interactive_task, ROLLING BACK (implicitly).')
 #             raise self.Exceptions.Rollback
 #     else:
-#         logger.info(f'XDEBUG debug_interactive_task, Waiting for Instruction ...')
+#         log.info(f'XDEBUG debug_interactive_task, Waiting for Instruction ...')
 # 
 #         # Generic instruction
 #         instruction = self.wait_for_instruction("Please instruct (button above).")
 #         
 #     
-# #     logger.info(f'XDEBUG debug_interactive_task, Sleeping for an hour')
+# #     log.info(f'XDEBUG debug_interactive_task, Sleeping for an hour')
 # #     time.sleep(60*60)
 #     # This implicitly sets state to SUCCESS
 #     return f'final result: {instruction}'
@@ -100,70 +103,74 @@ def add_book(self, *args, **kwargs):
     '''
     A transaction manager for adding books. Testing Celery Interactive.
     '''
-    logger.info(f'Starting with {args} and {kwargs}')
-    logger.info(f'Packed Form: {kwargs["form"]}')
+    step_sleep = 0.5
+    
+    log.info(f'Starting with {args} and {kwargs}')
+    log.info(f'Packed Form: {kwargs["form"]}')
     
     form = self.django.unpack_form(kwargs["form"])
 
     if form.is_valid():
-        logger.info(f'FORM is VALID')
+        log.info(f'FORM is VALID')
     else:
-        logger.info(f'FORM is INVALID')
+        log.info(f'FORM is INVALID')
         
     for i, e in enumerate(form.errors):
-        logger.info(f'ERROR: {i} {e}')
+        log.info(f'ERROR: {i} {e}')
 
     self.send_update(state="STARTING")
    
     n = 10
+
+    self.progress.configure(n, 3)
+    
     for i in range(n):
-        logger.info(f'Working... {i+1} of {n}')
+        log.info(f'Working... {i+1} of {n}')
          
-        progress = self.progress(100*(i+1)/n, i+1, n, f"First pass, step {i+1}", f"Interim result at step {i+1}")
+        self.progress.send_update(i+1, 1, f"First pass, step {i+1}", f"Interim result at step {i+1} of stage 1")
  
-        self.send_progress(progress)
- 
-        time.sleep(0.5) 
+        time.sleep(step_sleep) 
      
-    logger.info(f'Waiting for Approval to Continue (continue or abort) ...')
+    log.info(f'Done First Pass: Waiting for Approval to Continue to Second Pass (continue or abort) ...')
  
     # Confirmation request
     # Will either return (self.CONTINUE) or raise a self.ABORT exception
-    self.wait_for_continue_or_abort("This is an interim result", progress, continue_monitoring=f"Second pass test for {self.shortname}")
-    #self.wait_for_commit_or_rollback("This is an interim result", progress)    
+    self.progress.send_update(n, 1, "Done stage 1", "This is an interim result after stage 1")
+    
+    self.wait_for_continue_or_abort(f"Second pass test for {self.shortname}")
     
     for i in range(n):
-        logger.info(f'Working... {i+1} of {n}')
+        log.info(f'Working... {i+1} of {n}')
         
-        progress = self.progress(100*(i+1)/n, i+1, n, f"Second pass, step {i+1}", f"Interim result at step {i+1}")
+        self.progress.send_update(i+1, 2, f"Second pass, step {i+1}", f"Interim result at step {i+1} of stage 2")
 
-        self.send_progress(progress)
+        time.sleep(step_sleep) 
 
-        time.sleep(0.5) 
+    log.info(f'Done Second Pass: Waiting for Confirmation (commit or rollback), before Third Pass  ...')
 
-    logger.info(f'Waiting for Confirmation (commit or rollback) ...')
+    self.progress.send_update(n, 2, "Done stage 2", "This is an interim result after stage 2")
 
     # Confirmation request
     # Will either return (self.COMMIT) or raise a self.Exceptions.Rollback exception
     try:
-        self.wait_for_commit_or_rollback("This is an interim result", progress, continue_monitoring=f"Third (and Final) pass test for {self.shortname}")
+        self.wait_for_commit_or_rollback(f"Third (and Final) pass test for {self.shortname}")
     except self.Exceptions.Rollback:
         pass
 
     for i in range(n):
-        logger.info(f'Working... {i+1} of {n}')
+        log.info(f'Working... {i+1} of {n}')
         
-        progress = self.progress(100*(i+1)/n, i+1, n, f"Third pass, step {i+1}", f"Interim result at step {i+1}")
+        self.progress.send_update(i+1, 3, f"Third pass, step {i+1}", f"Interim result at step {i+1} of stage 3")
 
-        self.send_progress(progress)
+        time.sleep(step_sleep) 
 
-        time.sleep(0.5) 
-
-    logger.info(f'Waiting for Confirmation  (commit or rollback) ...')
+    log.info(f'Done Third (Final) Pass: Waiting for Confirmation  (commit or rollback) ... beforce completion.')
 
     # Confirmation request
     # Will either return (self.COMMIT) or raise a self.ROLLBACK exception
-    self.wait_for_commit_or_rollback("This is an interim result", progress)
+    self.wait_for_commit_or_rollback()
+
+    log.info(f'Task Committed. Completing...')
 
     return f'final result: COMMITTED'
 

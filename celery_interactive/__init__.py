@@ -260,6 +260,12 @@ __version__ = '0.1'
 
 __all__ = ['config', 'base', 'celery', 'kombu', 'django', 'context', 'decorators']
 
-# Import the Interactive class from the kombu module
-from .kombu import Interactive
+import logging
  
+log = logging.getLogger(__package__)
+
+# Import the Interactive class from the kombu module
+from . import kombu 
+
+Interactive = kombu.Interactive
+

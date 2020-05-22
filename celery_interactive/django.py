@@ -1,14 +1,14 @@
 import json, functools
 
-from celery.result import AsyncResult
-
 from django.apps import apps
 from django.template import loader
 from django.forms.models import modelform_factory
 from django.http.request import HttpRequest
 from django.http.response import HttpResponse
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError
 
-from .config import debug
+from . import log
 from .celery import Task
 from .decorators import ConnectedView
 
@@ -119,6 +119,7 @@ class Django:
         return HttpResponse(template.render(response, request))
 
     def __start_and_monitor__(self, request, form):
+        log.debug(f"Starting {self.task.name}")
         self.task.request.id = self.task.django.start(request, form)
         response = {'name':      self.task.name, 
                     'shortname': self.task.shortname, 
@@ -203,7 +204,7 @@ class Django:
     
     class PulseCheck:
         '''
-        A decorator for Django Views that provide basic task pulse checking 
+        A decorator for Django Views that provides basic task pulse checking 
         features.
         '''
         # Note that:
@@ -219,6 +220,36 @@ class Django:
             Processes an incoming request delivering either a JSON string to
             an AJAX caller or a full HTML page to a page requester. 
             '''
+            def request_page(request, template, response):
+                '''
+                A small bit of resueable code (as we use it in a few places here)
+                that simply sets a request_page in the response for the mentioned
+                template.
+                
+                That JSON response, picked up by an AJAX caller should trigger it
+                to retrun with a page request to this page with the template in the
+                request params, or if the template is a valid URL just to issue a 
+                page request to that URL.
+                
+                If template is a URL ending in ? the AJAX caller should add at least the
+                task_id and the response_key, so that the URL can if it is backed by
+                a server that knows how, load the response using the response key.
+                The response of course contains posisbly useful context for the target
+                URL, not least the result of the task, and or its failure reason etc.
+                
+                :param request:    The request object that provides us with a session store
+                :param template:   The template we want requested 
+                :param response:   The response dictionay wich we'll add the request_page to. 
+                '''
+                response["request_page"] = template
+                
+                host_url = request._current_scheme_host
+                if not isURL(template) or template.starts_with(host_url):
+                    response["response_key"] = store_response
+                    
+                request.session[store_response] = response
+                log.debug(f"Request that the AJAX caller send a page request for {request.get_full_path()} with template={template} and a context of {response}.")
+            
             task_name = task.name
             task_id = task.request.id
             
@@ -226,22 +257,31 @@ class Django:
             # (i.e. have been called via AJAX) or render a page 
             # (i.e. got here through a button press on another page)
             #
-            # Django's is_ajax() method just implements and old 
+            # Django's is_ajax() method just implements an old 
             # on-line defacto standard checking for an HTTP header
             # called X-Requested-With and that it has the value 
-            # XMLHttpRequest, so any Javascript fecthing this that
+            # XMLHttpRequest, so any Javascript fetching this that
             # uses plain Javascript wants to consider this and set 
-            # the header.
+            # that header.
             deliver_json = request.is_ajax()
+            
+            # If ajax_confirmations is in the request, we will let the monitor 
+            # present confirmation requests. Otherwise we will use configured
+            # templates. 
+            ajax_confirmations = not Django.get_request_param(request, "ajax_confirmations") is None
     
             # Get any instructions that may have been submitted that we support    
             instruction = Django.get_request_param(request, "instruction")
-            notify = Django.get_request_param(request, "notify")
+            requested_template = Django.get_request_param(request, "template")
             
-            please_confirm = not Django.get_request_param(request, "confirm") is None
+            # Has a general request to cancel the task arrived?
+            please_cancel = not Django.get_request_param(request, "cancel") is None
+
+            # Responses to ASK_CONTINUE conrimation requests 
             please_continue = not Django.get_request_param(request, "continue") is None
             please_abort = not Django.get_request_param(request, "abort") is None
-            please_cancel = not Django.get_request_param(request, "cancel") is None
+            
+            # Responses to ASK_COMMITconrimation requests 
             please_commit = not Django.get_request_param(request, "commit") is None
             please_rollback = not Django.get_request_param(request, "rollback") is None
     
@@ -251,28 +291,32 @@ class Django:
             # task. 
             response = {'name':      task.name, 
                         'shortname': task.shortname, 
-                        'id':        task.request.id, 
+                        'id':        task.request.id,
+                        'state':     'UNKNOWN', 
                         'result':    None}
             
             if task and task.request.id:
                 # The name of a session keys in which to store data we wish to persist
                 store_last_progress = f"task_{task.name}_{task.request.id}_last_progress"
                 store_is_waiting_on = f"task_{task.name}_{task.request.id}_is_waiting_on"
-                store_notify_with = f"task_{task.name}_{task.request.id}_notify_with"
+                store_response  = f"task_{task.name}_{task.request.id}_response"
     
                 ####################################################################
-                # First up if we've been asked to notify the user then cut to the 
-                # chase and do that
-                if notify:
-                    response = request.session.get(store_notify_with, response)
-    
-                    state = response.get('state', '')
-                    if  state == "ABORTED":
-                        template = task.django.templates.aborted
-                    elif state == "ROLLEDBACK":
-                        template = task.django.templates.rolledback
-    
-                    template = loader.get_template(template)
+                # First up this is a page request and not an AJAX call, with a 
+                # template requested then let's cut to the chase and honor that.
+                if requested_template and not deliver_json:
+                    response = request.session.get(store_response, response)
+                    saved_template = response.get('request_page', '')
+
+                    if requested_template != saved_template:
+                        # If this happens the Javascript monitor screwed things up. It should receive
+                        # a request_page instruction which provides a template that it should send
+                        # back in the request as template, and hereing when passing a request_page
+                        # back in JSON the template should be saved in the response. This is a simple
+                        # integrity check.  
+                        log.warning("Warning: A template page request was made with a template that differs from the saved one.")
+                    
+                    template = loader.get_template(requested_template)
                     return HttpResponse(template.render(response, request))
                 
                 ####################################################################
@@ -285,8 +329,7 @@ class Django:
                 if instruction:
                     task.instruct(instruction)
                     response["instructed"] = instruction
-                    if debug:
-                        print(f"Instructed task to abort: {task.fullname}")
+                    log.debug(f"Instructed task to abort: {task.fullname}")
                     # Instruction sent to the task. 
                     # TODO: Add a new state INSTRUCTED which the task can respond with 
                     # once it's done the instruction.
@@ -295,8 +338,7 @@ class Django:
                 # send it on to the running task.
                 if please_abort or please_cancel:
                     task.please_abort()
-                    if debug:
-                        print(f"Asked task to abort: {task.fullname}")
+                    log.debug(f"Asked task to abort: {task.fullname}")
                     # Instruction to abort sent tot he task, it will respond with state of "ABORTED"
                     # on this or a subsequent pulse check. Below we will let the monitor know it 
                     # aborted and whther we want it to call back fro a page defined by 
@@ -320,27 +362,32 @@ class Django:
                 #      https://www.distributedpython.com/2018/09/28/celery-task-states/      
     
                 # Now fetch the current status of the task 
-#                 r = AsyncResult(task_id)
                 results = task.get_updates(task_id)
                 for r in results:
                     #TODO: Thinks this through. For now, just report them and keep 
                     #      the last one.
-                    if debug:
-                        print(f"Got result: state: {r.state}, result/info: {r.result}, Is waiting on: {request.session.get(store_is_waiting_on, 'Not WAITING')}")
+                    log.debug(f"Got result: state: {r.state}, result/info: {r.result}, Is waiting on: {request.session.get(store_is_waiting_on, 'Not WAITING')}")
                  
                 r = results[-1]
                 
-                # NOTE: r.info is an alias for r.result - they are the same thing
+                # NOTE: r.info is an alias for r.result and is polulated by the meta argument 
+                #       in Celery's update_state - they are all the same thing.
+                #
                 #       https://docs.celeryproject.org/en/stable/reference/celery.result.html#celery.result.AsyncResult
                 #       https://docs.celeryproject.org/en/stable/_modules/celery/result.html#AsyncResult
+                #
                 # Here we tend tend to use r.result when the task is complete and r.info for status updates.
                 # They both contain the meta argument to task.update_state() 
-                if debug:
-                    print(f"Kept FINAL result: state: {r.state}, result/info: {r.result}, Is waiting on: {request.session.get(store_is_waiting_on, 'Not WAITING')}")
+                log.debug(f"Kept FINAL result: state: {r.state}, result/info: {r.result}, Is waiting on: {request.session.get(store_is_waiting_on, 'Not WAITING')}")
     
                 # Associate the observed state with the task at hand and add it to the response
                 task.state = r.state
                 response['state'] = task.state 
+                
+                # Make a note of progress
+                # It's either provided in the result and if not we might have the last one in session store
+                # If neither exists, then None so we know none was provided.
+                progress = r.info.get('progress', request.session.get(store_last_progress, None))
                 
                 # TODO: REQUESTED and KILLED custom states have been added.
                 
@@ -356,8 +403,7 @@ class Django:
                 if task.state == "WAITING" and r.info == waiting_info:
                     task.state = "STILL_WAITING"
                     response['state'] = task.state
-                    if debug: 
-                        print(f"WAITING on same thing so STILL_WAITING on: {waiting_info}")
+                    log.debug(f"WAITING on same thing so STILL_WAITING on: {waiting_info}")
                 
                 # Else, if we have waiting_info then we know we were WAITING on something
                 # but maybe we are still waiting or maybe not. 
@@ -369,49 +415,48 @@ class Django:
                         task.state = "STILL_WAITING"
                         response['state'] = task.state 
                         r.info = waiting_info
-                        if debug: 
-                            print(f"PENDING while WAITING so STILL_WAITING on: {waiting_info}")
+                        log.debug(f"PENDING while WAITING so STILL_WAITING on: {waiting_info}")
                     
                     # If task.state == "WAITING" it's because the new info does not match
                     # the old info, implying we're now waiting on something else. The task 
                     # has changed it's mind about what it's waiting for. That being the 
                     # case we maintain the "WAITING" state unaltered.
+                    elif task.state == "WAITING":
+                        pass
                     
                     # Finally if the state is something other than WAITING or PENDING
                     # then we're not waiting any more and must remove the waiting_info
                     # from the session store. 
                     else:
                         request.session.pop(store_is_waiting_on)
-                        if debug:
-                            print(f"NO LONGER WAITING on: {waiting_info}, now {task.state} with {r.info}")
+                        log.debug(f"NO LONGER WAITING on: {waiting_info}, now {task.state} with {r.info}")
     
                 ###################################################################
-                # Now we can check the state the task is in an act accordingly.
-                
-                # The classic update is PROGRESS which provides informatiom that will 
-                # help the client update  a progress bar. 
-                #
-                # If we were WAITING we not longer are so pop the record of that out 
-                # of the session store (i.e. erase it there). 
-                #
-                # if this is not a PROGRESS update, but some other status update, 
-                # grab the last known  progress for other views
+                # Now we can check the state the task is in and act accordingly.
+
                 if task.state == "PROGRESS":
+                    # The classic update is PROGRESS which provides informatiom that will 
+                    # help the client update a progress bar. 
+                    #
+                    # If we were WAITING we no longer are so pop the record of that out 
+                    # of the session store (i.e. erase it there). 
+                    #
+                    # if this is not a PROGRESS update, but some other status update, 
+                    # grab the last known  progress for other views
                     request.session.pop(store_is_waiting_on, None)
-                    progress = r.info.get('progress', task.progress())
+                    if not progress:
+                        progress = task.progress.as_dict()
                     request.session[store_last_progress] = progress
                     response["progress"] = progress
-                    if debug:
-                        print(f"PROGRESS: {progress}")
+                    log.debug(f"PROGRESS: {progress}")
     
-                # STARTED is the state of the task just after we started it.
-                # Given we get an state update immediately after it may still
-                # be STARTED or have updated state by then. 
                 if task.state == "STARTED":
-                    print(f"Task is STARTED")
-                    response["progress"] = task.progress()
-                    if debug:
-                        print(f'STARTED: {response["progress"]}')
+                    # STARTED is the state of the task just after we started it.
+                    # Given we get an state update immediately after it may still
+                    # be STARTED or have updated state by then. 
+                    log.debug(f"Task is STARTED")
+                    response["progress"] = task.progress.as_dict()
+                    log.debug(f'STARTED: {response["progress"]}')
                     # TODO: if monitor not running, then start one.
                     #       How do we know if one is running? We got here I guess.
                     #       And we got here with deliver_json or not. So if not
@@ -425,24 +470,22 @@ class Django:
                 # STILL_WAIITNG if we got PENDING after we started WAITING so won't
                 # land here.
                 if task.state == "PENDING":
-                    if r.info:
-                        response["progress"] = r.info.get('progress', request.session.get(store_last_progress, task.progress()))
+                    if r.info and hasattr(r.info, 'progress') and isinstance(r.info['progress'], dict):
+                        response["progress"] = r.info['progress']
                     else:
-                        response["progress"] = request.session.get(store_last_progress, task.progress())
-                    if debug:
-                        print(f'PENDING: {response["progress"]}')
+                        response["progress"] = request.session.get(store_last_progress, task.progress.as_dict())
                     
-                # If the task received an istruction to ABORT or ROLLBACk it will update
-                # state to tell us it did that! In which case again it is no longer WAITING
-                # so if it was so we clear that from session store, and can return and a page
-                # defined by a configured template. We can do this because we're no longer
-                # monitoring.                 
+                    log.debug(f'PENDING: {response["progress"]}')
+                    
                 elif task.state in ["ABORTED", "ROLLEDBACK"]:
+                    # If the task received an instruction to ABORT or ROLLBACk it will update
+                    # state to tell us it did that! In which case again it is no longer WAITING
+                    # so if it was so we clear that from session store, and can return and a page
+                    # defined by a configured template. We can do this because we're no longer
+                    # monitoring.                 
                     winfo = request.session.pop(store_is_waiting_on, {})
                     response['canceled'] = True
-                    response["progress"] = r.info.get('progress', request.session.get(store_last_progress, task.progress()))
-                    response['interim_result'] = str(r.info.get('interim_result', r.info.get('result', '')))
-                    response['result'] = str(r.info.get('result', ''))
+                    response["progress"] = r.info.get('progress', request.session.get(store_last_progress, task.progress.as_dict()))
                     
                     if task.state == "ABORTED":
                         template = task.django.templates.aborted
@@ -452,272 +495,243 @@ class Django:
                         template = task.django.templates.rolledback
                         # Rolling back a task might abort the task (for a task managing a single 
                         # database transaction) or it might want to continue. Only the task knows
-                        # and it informs us when it goes into the wait whether it wants to coninue
-                        # monitoring or not and that is stored session so we don't forget.
+                        # and it informs us when it goes into the wait whether it wants to continue
+                        # monitoring or not and that is stored in session so we don't forget.
                         continue_monitoring = winfo.get('continue_monitoring', False)
                      
-                    if debug:
-                        print(f'{task.state}: Template: {template}, continue_monitoring: {continue_monitoring}')
+                    log.debug(f'{task.state}: Template: {template}, continue_monitoring: {continue_monitoring}')
     
-                    if template and not continue_monitoring:
-                        response['interim_result'] = str(r.info.get('interim_result', r.info.get('result', '')))
+                    if continue_monitoring:
+                        # We have reload the monitor if it's not how we got here. 
+                        if not deliver_json:
+                            log.debug(f"Rollback complete, continue monitoring with {task.django.templates.confirm}: {response}")
+                            template = loader.get_template(task.django.templates.monitor)
+                            return HttpResponse(template.render(response, request))
+                        else:
+                            log.debug(f"Rollback complete, continue monitoring, returns to AJAX caller this data: {response}")
+                            
+                    else:
                         response['result'] =  str(r.info.get('result', ''))
     
                         if not deliver_json:
-                            # Display a page defined by a configured template,
-                            if debug:
-                                print(f"Return page: {template}, with context: {response}")
-                                
+                            # If we cannot deliver JSON we need a template defined. It's a critical error
+                            # if one isn't and we can't find one.
+                            log.debug(f"Return page: {template}, with context: {response}")
+                            
                             template = loader.get_template(template)
                             # Provide the response as context to the template
                             return HttpResponse(template.render(response, request))
+                        
                         elif template:
-                            request.session[store_notify_with] = response
-                            response["notify"] = True
-                            if debug:
-                                print(f"Request that the AJAX caller, redirect back here with ?notify so we can render a page.")
+                            # If we must deliver JSON and there is a template defined, we respond
+                            # with JSON that asks the monitor to redirect here with a page request.
+                            response["k"] = template
+                            request.session[store_response] = response
+                            log.debug(f"Request that the AJAX caller send a page request for {request.get_full_path()} with template={template} and a context of {response}.")
+                            
                         else:
-                            if debug:
-                                print(f"Return to AJAX caller the data: {response}")
+                            # If we must deliver JSON and don't have a template it means we are content for the monitor to
+                            # notify about therollback. It will know from the result in the response.
+                            log.debug(f"Return to AJAX caller the data: {response}")
                     
-                # If the task throws an exception then Celery will return a FAILURE status with
-                # the exception explained in the result. It's no longer WAITING if it was, and 
-                # can fall back to a JSON response to the pulse checker (monitor) that got us here.
                 elif task.state == "FAILURE":
+                    # If the task throws an exception then Celery will return a FAILURE status with
+                    # the exception explained in the result. It's no longer WAITING if it was, and 
+                    # can fall back to a JSON response to the pulse checker (monitor) that got us here.
+                    #
+                    # TODO: Add a template option for error reporting. So we end up with same options as
+                    #       for rollbacks above. In fact this block cna merger with that one.
                     request.session.pop(store_is_waiting_on, None)
                     response["failed"] = True
                     response["result"] = str(r.result)  # Contains the error
+                    # result=info=meta, so if FAILUR writes error message to result we have no info that contains progress 
                     response["progress"] = request.session.get(store_last_progress, task.progress())
-                    if debug:
-                        print(f"FAILURE: Return to AJAX caller the data: {response}")
-                    # TODO: Support a template option here. If specified and deliver_son doa  round trip/
+                    log.debug(f"FAILURE: Return to AJAX caller the data: {response}")                    
                     
-                # When the task is complete it will return the "SUCCESS" status and
-                # deliver a result. As ever if it was WAITING it no longer is so
-                # clear our record of that.
                 elif task.state == "SUCCESS":
+                    # When the task is complete it will return the "SUCCESS" status and
+                    # delivers a result. As ever if it was WAITING it no longer is so
+                    # clear our record of that.
                     request.session.pop(store_is_waiting_on, None)
-                    total_steps = request.session.pop(store_last_progress, {}).get("total", 0)
                      
-                    response["progress"] = task.progress(100, total_steps, total_steps, "Done")
+                    response["progress"] = task.progress.done("Done")
                     response["result"]   = str(r.result) # Contains the returned value of the task function
                     
-                    if debug:
-                        print(f"SUCCESS: Return to AJAX caller the result: {response}")
+                    log.debug(f"SUCCESS: Return to AJAX caller the result: {response}")
                     
-                # Finally, if the task is WAITING on a response from us, we better deliver one,
-                # that means a round trip to the web browser. We expect a prompt which is either
-                # ASK_CONTINUE or ASK_COMMIT, which will determine the template we want to render.
                 elif task.state in ["WAITING", "STILL_WAITING"]:
+                    # Finally, if the task is WAITING on a response from us, we better deliver one,
+                    # that means a round trip to the web browser. We expect a prompt which is either
+                    # ASK_CONTINUE or ASK_COMMIT, which will determine the template we want to render
+                    # and the kind of response we are seeking.
+                    
                     # Persist the waiting_info in the session store
                     # But only on WAITING, not STILL WAITING
                     # i.e. on the first notification we're WAITING 
                     if task.state == "WAITING":
                         request.session[store_is_waiting_on] = r.info
-                        if debug:
-                            print(f"WAITING (for first time) on: {r.info}")
-                        
-                    response["progress"]       = request.session.get(store_last_progress, None)
-                    response["prompt"]         = r.info.get('prompt', '')
-                    response["interim_result"] = str(r.info.get('interim_result', r.info.get('result', '')))
-                    response["result"]         = str(r.info.get('result', ''))
+                        log.debug(f"WAITING (for first time) on: {r.info}")
+                    
+                    # Recalling that info=result=meta
+                    # The WAITING state provides a prompt and we expect progress with an interim result
+                    # as well as letting us know if it wasnt us to continue monitoring after the response
+                    # is delivered.
+                    prompt = r.info.get('prompt', '')
+                    response["prompt"]         = prompt
                     response["waiting"]        = True
+                    response["progress"]       = progress if progress else task.progress.as_dict()
     
                     continue_monitoring = r.info.get('continue_monitoring', False)
                     
-                    if response["prompt"] == task.ASK_CONTINUE:
-                        if debug:
-                            print(f"ASK_CONTINUE from task: {task.fullname}")
-    
-                        # When the task is WAITING state with ASK_CONTINUE 
-                        # prompt we either need to present the user with the 
-                        # question, or we've received a response to that 
-                        # question from the user. 
-                        #
-                        # Presenting the user with a question lands here 
-                        # twice the sequence is as follows:
-                        #
-                        # 1. ASK_CONTINUE - returns JSON with "confirm" in response
-                        #    Javascript should then reload this same URL but with "confirm" in the request
-                        #
-                        # 2. ASK_CONTINUE and please_confirm
-                        #    Javascript either redirected here for a page render or 
-                        #    came back here with an AJAX call for a JSON response. 
-                        #
-                        #    In the former case we render task.django.templates.confirm
-                        #    In the latter case the Javascript is asking to for enough
-                        #    information to render its own conrimation form to solicit 
-                        #    user input. So we send it that.
-                        #
-                        # 3. positive_URL or negative_URL is requested
-                        #    Only positive_URL is handled here, negative_URL
-                        #    request the task to abort and is handled above.
-                        #    positive_URL is a request to continue from the user.
-                        #    If it comes as a page request we  reload the 
-                        #    configured monitor, else if it arrives as an AJAX
-                        #    request we simply return a PROGRESS report. 
+                    # We support two standard WAITING prompts:
+                    #
+                    # ASK_CONTINUE which is asking to continue or abort
+                    # ASK_COMMIT   which is asking if a result shoudl be committed or rolled back
+                    if prompt in [task.ASK_CONTINUE, task.ASK_COMMIT]:
+                        # First check if we are here witha response from the user or not.
+                        # please_abort is not relevant here as if we got that resposne we acted on as a 
+                        # priority above. But the remaining three repsonses from the two standard
+                        # questions ASK_CONTINUE and ASK_COMMIT are handeled here. 
+                        got_response = please_continue or please_commit  or please_rollback  
                         
-                        if please_confirm:
-                            # We've been asked to render to the user a confirmation form. We'll offer them
-                            # two choices, the positive (continue) and the negative (abort)
-                            #
-                            # If we've been asked via a page request we'll return the page defined by
-                            #     task.django.templates.confirm
-                            # but if we've been asked via an AJAX request we'll just return the 
-                            # data needed in the AJAS response so the requester can build their own 
-                            # form to solicit user input. 
-                            #
-                            # The idea is we come back here by requesting postive_URL (in which case
-                            # we have please_continue) of negative_URL (in which case the abort is 
-                            # already handled above).  
-                            response.update(
-                                    {                                        
-                                      'positive_lbl':   "Continue", 
-                                      'negative_lbl':   "Abort",
-                                      'positive_URL':   request.build_absolute_uri('?') + f"?continue&task_id={task.request.id}", 
-                                      'negative_URL':   request.build_absolute_uri('?') + f"?abort&task_id={task.request.id}",
-                                    })
+                        log.debug(f"ASK {prompt} from task: {task.fullname}, got_response: {got_response}")
+    
+                        # If we get here and the the task is WAITING state with 
+                        # the ASK_CONTINUE prompt we either need to present the 
+                        # user with the question, or we've received a response 
+                        # to that question from the user.
+                        #
+                        # In both cases the task is WAITING and the prompt is
+                        # ASK_CONTINUE, we know that a user has responded if
+                        # please_continue or please_abort is true.
+                        # 
+                        # If neither is true we know to pesent the question to the user.
+                        #
+                        # if ajax_confirmations is true the monitor wants to handle
+                        # the presentation of confirmation requests to the user otherwise
+                        # we need to have a template to render defined. That requires an 
+                        # extra round trip if we notice this during asn AJAX request. We
+                        # need to ask the monitor to reload the page as a page request
+                        # so we can deliver a template. 
+                                               
+                        # Step 2
+                        #     Takes priority - if we have a response we can act on it, we don't need
+                        #     to ask for one. It's step 2 because in step 1we have to ask for a 
+                        #     response. 
+                        #
+                        #     We got a response. If it was please_abort that is handled above, as it
+                        #     takes priority and we do that before we even check the task status.
+                        #     please_continue, please_commit and please_rollback are all handled here.
+                        if got_response:
+                            if please_continue:
+                                # Implies postive_URL was requested in resposne fo ASK_CONTINUE. 
+                                # So we let the task know that it should continue
+                                task.please_continue()
                                 
-                            if not deliver_json:
-                                if debug:
-                                    print(f"please_confirm (continue or abort) with {task.django.templates.confirm}: {response}")
-                                template = loader.get_template(task.django.templates.confirm)
-                                return HttpResponse(template.render(response, request))
-                            else:
-                                if debug:
-                                    print(f"please_confirm (continue or abort) returns to AJAX caller this data: {response}")
-    
-                        elif please_continue:
-                            # Implies postive_URL was requested. 
-                            # So we let the task know that it should continue
-                            # a page or a just
-                            task.please_continue()
-    
-                            # If it's a page request, we render the monitor configured in
-                            #      task.django.templates.monitor
-                            if not deliver_json:
-                                if debug:
-                                    print(f"please_continue with new monitor, titled '{continue_monitoring}': {response}")
-                                task.monitor_title = continue_monitoring
-                                return task.django.monitor(response, request)
-                            else:
-                                if debug:
-                                    print(f"please_continue with existing monitor: {response}")
-                        
-                        else: 
-                            # Fall through to standard JSON pulse delivery with a request to bounce back here with
-                            # ?confirm in the request so we can render a page. The monitor has the option of course
-                            # of bouncing back with an AJAX request or a page request (dealt with above)
-                            response["confirm"] = True
-                            if debug:
-                                print(f"Request that the AJAX caller, redirect back here with ?confirm so we can render a page.")
-                        
-                    elif response["prompt"] == task.ASK_COMMIT:
-                        if debug:
-                            print(f"ASK_COMMIT from task: {task.fullname}")
-    
-                        # Very similar to ASK_CONTINUE above, the key differences being:
-                        #
-                        # We're asking for commit or rollback instruction.
-                        # We have the option to continue monitoring even after 
-                        # a rollback, in support of tasks implementing multiple 
-                        # transactions - this is an extension on the abort option
-                        # under ASK_CONTINUE which asks the task to end completely.
-                        #
-                        # When the task is WAITING state with ASK_COMMIT 
-                        # prompt we either need to present the user with the 
-                        # question, or we've received a response to that 
-                        # question from the user. 
-                        #
-                        # Presenting the user with a question lands here 
-                        # twice the sequence is as follows:
-                        #
-                        # 1. ASK_COMMIT - returns JSON with "confirm" in response
-                        #    Javascript should then reload this same URL but with "confirm" in the request
-                        #
-                        # 2. ASK_COMMIT and please_confirm
-                        #    Javascript either redirected here for a page render or 
-                        #    came back here with an AJAX call for a JSON response. 
-                        #
-                        #    In the former case we render task.django.templates.confirm
-                        #    In the latter case the Javascript is asking to for enough
-                        #    information to render its own conrimation form to solicit 
-                        #    user intput. So we send it that.
-                        #
-                        # 3. positive_URL or negative_URL is requested
-                        #    positive_URL is a request to commit a transaction,
-                        #    and optionally to continue.
-                        #    negative_URL is a request to roll back a transaction
-                        #    and optionally to continue.
-                        #
-                        #    If it comes as a page request we reload the 
-                        #    configured monitor, else if it arrives as an AJAX
-                        #    request we simply return a PROGRESS report. 
-                         
-                        if please_confirm:
-                            print(f"PLEASE CONFIRM: {r.info}.")
-                            print(f"Loading template view from {task.django.templates.confirm}.")
-                            # No JSON response required. Instead we want to 
-                            # render a confirmation view
-                            response.update(
-                                    {                                        
-                                      'positive_lbl':   "Commit", 
-                                      'negative_lbl':   "Discard",
-                                      'positive_URL':   request.build_absolute_uri('?') + f"?commit&task_id={task.request.id}", 
-                                      'negative_URL':   request.build_absolute_uri('?') + f"?rollback&task_id={task.request.id}",
-                                    })
-                                
-                            if not deliver_json:
-                                if debug:
-                                    print(f"please_confirm (commit or rollback) with {task.django.templates.confirm}: {response}")
-                                template = loader.get_template(task.django.templates.confirm)
-                                return HttpResponse(template.render(response, request))
-                            else:
-                                if debug:
-                                    print(f"please_confirm (commit or rollback) returns to AJAX caller this data: {response}")
-                        
-                        elif please_commit or please_rollback:
-                            if please_commit:
-                                # Implies postive_URL was requested. 
+                                # We don't support a templated response to please_continue, only continue_monitori
+                                template = None
+                                if not continue_monitoring:
+                                    continue_monitoring = "Continuing as requested"
+
+                                log.debug(f"Asked tast to continue.")
+
+                            elif please_commit:
+                                # Implies postive_URL was requested in resposne fo ASK_COMMIT. 
                                 # So we let the task know that it should commit the transaction
                                 task.please_commit()
                                 template = task.django.templates.committed
-                                if debug:
-                                    print(f"please_commit:")
+                                log.debug(f"Asked tast to commit.")
     
                             elif please_rollback:
-                                # Implies negative_URL was requested. 
+                                # Implies negative_URL was requested  in resposne fo ASK_COMMIT. 
                                 # So we let the task know that it should roll back the transaction
                                 task.please_rollback()
                                 template = task.django.templates.rolledback
-                                if debug:
-                                    print(f"please_rollback:")
-    
-                            # If it's a page request, we render the monitor configured in
-                            #      task.django.templates.monitor
-                            #           or
-                            #      task.django.templates.committed
-                            if not deliver_json:
-                                if continue_monitoring:
+                                log.debug(f"Asked tast to roll back.")
+
+                            if continue_monitoring:
+                                # If it's a page request, we render the monitor configured in
+                                #      task.django.templates.monitor
+                                # Otherwise we just fall back on the standard AJAX respsonse.
+                                if not deliver_json:
+                                    log.debug(f"Continue monitoring with new monitor, titled '{continue_monitoring}': {response}")
                                     task.monitor_title = continue_monitoring
-                                    if debug:
-                                        print(f"\tcontinue with new monitor, titled '{task.monitor_title}': {response}")
                                     return task.django.monitor(response, request)
                                 else:
-                                    if debug:
-                                        print(f"\tDeliver landing page: '{template}': {response}")
+                                    log.debug(f"Continue monitoring with existing monitor: {response}")
+                                    
+                            # If we don't want to continue monitoring and have a template we can just deliver that
+                            elif template:
+                                # If it's a page request we can just deliver it now
+                                if not deliver_json:
+                                    log.debug(f"\tDeliver landing page: '{template}': {response}")
                                     template = loader.get_template(template)
                                     return HttpResponse(template.render(response, request))
-                            # else fall through to the standard JSON delivery.
-                            
+                                
+                                # If it's AJAX request and we must deliver JSON we request a reload instead
+                                else:
+                                    request_page(request, template, response)
+                                    
+                            else:
+                                log.error(f"Internal Error: After a confirmation request we must continue monitoring or have a template to render.")
+
                         else:
-                            # Fall through to standard JSON pulse delivery with a request to bounce back here with
-                            # ?confirm in the request so we can render a page. The monitor has the option of course
-                            # of bouncing back with an AJAX request or a page request (dealt with above)
-                            response["confirm"] = True
-                            if debug:
-                                print(f"Request that the AJAX caller, redirect back here with ?confirm so we can render a page.")
-        
+                            # If we haven't got a response yet (i.e. we  need to ask the question
+                            # then we prepare in the response the necessary answer defintions. 
+                            thisURL = request.build_absolute_uri(f"?task_id={task.request.id}")
+                            
+                            if prompt == task.ASK_CONTINUE:
+                                response.update(
+                                        {                                        
+                                          'positive_lbl':   "Continue", 
+                                          'negative_lbl':   "Abort",
+                                          'positive_URL':   f"{thisURL}&continue", 
+                                          'negative_URL':   f"{thisURL}&abort",
+                                        })
+                            elif prompt == task.ASK_COMMIT:
+                                response.update(
+                                        {                                        
+                                          'positive_lbl':   "Commit", 
+                                          'negative_lbl':   "Discard",
+                                          'positive_URL':   f"{thisURL}&commit", 
+                                          'negative_URL':   f"{thisURL}&rollback",
+                                        })
+                            
+                            # Step 1:
+                            #     If we don't have a response yet, we need to ask to present the user with
+                            #     a question.
+                            #
+                            #     if ajax_confirmations are requested by the monitor deliver this as JSON
+                            #     if on the other hand this is a page request we render the appropriate template.
+                            #        To become a page request we need a prefix step 0 (below) which
+                            #        asks the monitor to perform a page request. It can't receive a 
+                            #        templated page in the response as it's expecting JSON, we need the 
+                            #        browser to load the page properly.      
+                            if ajax_confirmations or not deliver_json:
+                                # We prepare a response that empowers the recipient to present the 
+                                # confirmation request to a user. It will be delivred vi JSON if
+                                # ajax_confirmations are demands, or via a template if the monitor 
+                                # does not want ajax_confirmations and received instead a request to
+                                # load this URL as aapage request, in which case it comes back with
+                                # "confirm" in the request.
+                                    
+                                # If we arrived here with a page request (deliver_json is false) then 
+                                # we deliver a rendered tenplate. Else we just deliver the resonse in 
+                                # JSON as normal (i.e. pass thru, it's down below). 
+                                if not deliver_json:
+                                    log.debug(f"ASK {prompt} with {task.django.templates.confirm}: {response}")
+                                    template = loader.get_template(task.django.templates.confirm)
+                                    return HttpResponse(template.render(response, request))
+                                else:
+                                    log,debug(f"ASK {prompt} returns to AJAX caller this data: {response}")
+                                        
+                            # Step 0 only if we need to convert the current AJAX request to a
+                            #        page request first. A sort of pre-step asking the monitor 
+                            #        to bounce right back here with a page request.
+                            elif deliver_json: 
+                                template = task.django.templates.confirm
+                                request_page(request, template, response)
+
             #######################################################################
             # RETURN a JSON dict capable of feeding a progress bar 
             #######################################################################
@@ -746,8 +760,7 @@ class Django:
             # response with what it provides, but don't let it clobber 
             # (override) existing values unless it specifically asks to.
             if isinstance(contrib, dict):
-                if debug:
-                    print(f"Decorated task contributes: {contrib}")
+                log.debug(f"Decorated task contributes: {contrib}")
                     
                 clobber = contrib.pop("__overwrite__", False)
                      
@@ -760,8 +773,7 @@ class Django:
             # Return the dictionary as JSON string (intended to be used 
             # in Javascript at the client side, to drive a progress bar
             # and/or other feedback) 
-            if debug:
-                print(f"RESPONSE to AJAX caller: {response}")
+            log.debug(f"RESPONSE to AJAX caller: {response}")
                 
             return HttpResponse(json.dumps(response))
 
@@ -789,8 +801,7 @@ class Django:
                             request (i.e. not as an arg)
             '''
            
-            if debug:
-                print(f"\nCHECKING PULSE with {self.__name__}: args:{args} kwargs:{kwargs}")
+            log.debug(f"\nCHECKING PULSE with {self.__name__}: args:{args} kwargs:{kwargs}")
     
             # The first argument might be "self" from a class method. 
             #
@@ -841,8 +852,7 @@ class Django:
                 task.request.id = r.task_id
                 task.state = r.state # should be "STARTED"
 
-                if debug:
-                    print(f"Started {task.fullname}, state: {task.state}")
+                log.debug(f"Started {task.fullname}, state: {task.state}")
             
             # Make the request available for processing
             # Process the request
@@ -913,3 +923,19 @@ class Django:
         post = getattr(request,"POST", {}).get(key, None)
         return post if get is None else get 
 
+##############################################################################################
+## Django helper Functions
+##############################################################################################
+
+def isURL(string):
+    '''
+    Using the Django core URLvalidator tests whether the supplied string is a URL or not. 
+    
+    :param string: The string to test.
+    '''
+    validate = URLValidator()
+    try:
+        validate(string)
+        return True
+    except ValidationError:
+        return False

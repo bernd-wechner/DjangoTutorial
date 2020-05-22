@@ -2,11 +2,10 @@ import functools, uuid, os
 
 from celery import Task as Celery_Task
 from celery.exceptions import Ignore
-from celery._state import _task_stack
 
 from django.http.request import HttpRequest
 
-from .config import logger
+from . import log
 from .context import InteractiveConnection
 
 class ArgumentError(Exception):
@@ -46,22 +45,22 @@ class ConnectedCall:
         call Task.run()  to run the actual Task decorated function. But we wrap that here 
         around the connection required to support Interactive communications.
         '''
-        logger.debug(f'Interactive task:')
+        log.debug(f'Interactive task:')
         
-        logger.debug(f'\tGot {len(args)} args:')
+        log.debug(f'\tGot {len(args)} args:')
         for v in args:
-            logger.debug(f'\t\t{v}')
+            log.debug(f'\t\t{v}')
 
-        logger.debug(f'\tGot {len(kwargs)} kwargs:')
+        log.debug(f'\tGot {len(kwargs)} kwargs:')
         for k, v in kwargs.items():
-            logger.debug(f'\t\t{k}: {v}')
+            log.debug(f'\t\t{k}: {v}')
 
         task = args[0]
             
         if not isinstance(args[0], Celery_Task):
             raise ArgumentError("ConnectedCall decorator can only decorate a Celery Task method.")
                 
-        logger.debug(f'Task: {task.fullname}')
+        log.debug(f'Task: {task.fullname}')
 
         # First, take note of the queuue_name_root
         task.queue_name_root = kwargs.get("queue_name_root", task.default_queue_name_root())
@@ -92,9 +91,9 @@ class ConnectedCall:
             except Ignore:
                 result = IGNORE_RESULT
             except Exception as e:
-                logger.error(f'TASK __CALL__ ERROR: {e}')
+                log.error(f'TASK __CALL__ ERROR: {e}')
                 import traceback
-                logger.error(traceback.format_exc())
+                log.error(traceback.format_exc())
                 # TODO: result to date?
                 task.send_update(state="FAILURE", meta={'result': 'result to date', 'reason': str(e)})
                 result = None
@@ -164,15 +163,15 @@ class ConnectedView:
         
         assert task, "Attempt to connect view without providing an Interactive Task - Needed for connection details."
         
-        logger.debug(f'Connected View: {self.view_function.__name__}')
+        log.debug(f'Connected View: {self.view_function.__name__}')
 
-        logger.debug(f'\tGot {len(args)} args:')
+        log.debug(f'\tGot {len(args)} args:')
         for v in args:
-            logger.debug(f'\t\t{v}')
+            log.debug(f'\t\t{v}')
                 
-        logger.debug(f'\tGot {len(kwargs)} kwargs:')
+        log.debug(f'\tGot {len(kwargs)} kwargs:')
         for k, v in kwargs.items():
-            logger.debug(f'\t\t{k}: {v}')
+            log.debug(f'\t\t{k}: {v}')
         
         with InteractiveConnection(task) as conn:  # @UnusedVariable
             if method_or_class:

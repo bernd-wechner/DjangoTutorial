@@ -2,7 +2,8 @@ from celery import current_app, Task as Celery_Task
 from celery.signals import before_task_publish
 from celery.exceptions import Ignore
 
-from inspect import signature
+from .django import Django
+from .progress import Progress, default_steps, default_stages
 
 class InteractiveBase(Celery_Task):
     '''
@@ -158,8 +159,6 @@ class InteractiveBase(Celery_Task):
     # Attributes
     ############################################################################################    
     
-    _progress = None
-    
     # A configuration that permits or prohibits parallelism.
     # Set to True if you want that only one running instance is
     # permitted at a time. Can be enabled in the decorator with:
@@ -203,7 +202,11 @@ class InteractiveBase(Celery_Task):
     
     def __init__(self, *args, **kwargs):
         # Add an instance of Django interfaces
-        self.django = self.Django(self)
+        self.django = Django(self)
+        # Add an instance of Progress to track progress
+        # Initial steps or stages can be provided in the decorator attributes
+        # e.g. @app.task(bind=True, steps=100, stages=3)
+        self.progress = Progress(self, getattr(self, "steps", default_steps), getattr(self, "stages", default_stages))
 
     def apply_async(self, args=None, kwargs=None, **options):
         '''
@@ -343,29 +346,7 @@ class InteractiveBase(Celery_Task):
     @property
     def fullname(self):
         return f"{self.shortname} -> {self.name} with id: {self.request.id}"
-                    
-    def progress(self, percent=0, current=0, total=0, description="", result=""):
-        '''
-        Trivially, builds a consistent JSONifieable data structure to describe task progress
-        to a progress bar running in Javascript on a web browser.
-        
-        Called with no arguments returns a 0,0,0 progress indicator, useful at
-        outset or to simply create the dictionary.
-        
-        :param percent: 0 to 100 indication %age complete
-        :param current: The last step completed (an integer) 
-        :param total: The total number of steps before the task is complete
-        :param description: A string describing the last step completed
-        :param result: An interim result if wanting to report one
-        '''
-        
-        P = {}
-        for p in list(signature(self.progress).parameters):
-            P[p] = eval(p)
-            
-        self._progress = P
-        return P                
-    
+
     #######################################################################
     # Instructions from Client to Task/Worker
     #######################################################################
@@ -447,18 +428,10 @@ class InteractiveBase(Celery_Task):
     # Instructions from Task/Worker to Client
     #######################################################################
 
-    def send_progress(self, progress, check_for_abort=True):
+    def wait_for_continue_or_abort(self, continue_monitoring=None):
         '''
-        Sends a simple progress report back to the Client.
+        Called by Task/Worker
         
-        :param progress:
-        '''
-        self.send_update(state="PROGRESS", meta={'progress': progress})
-        if check_for_abort:
-            self.check_for_abort()
-
-    def wait_for_continue_or_abort(self, interim_result=None, progress=None, continue_monitoring=None):
-        '''
         Waits for an instruction from the user, prompting to continue or abort
         '''
         # Outcome is always either an Abort exception or we continue, and if continuing we continue
@@ -468,21 +441,23 @@ class InteractiveBase(Celery_Task):
                 continue_monitoring = self.monitor_title
             else: 
                 continue_monitoring = "<No Title Provided>"
-
-        instruction = self.wait_for_instruction(self.ASK_CONTINUE, interim_result, continue_monitoring)
+                
+        instruction = self.wait_for_instruction(self.ASK_CONTINUE, continue_monitoring)
         if instruction == self.ABORT:
-            self.abort(progress, interim_result)
+            self.abort()
         else:
             assert instruction == self.CONTINUE, f"Invalid instruction {instruction} received by wait_for_continue_or_abort()"
             return instruction
 
-    def wait_for_commit_or_rollback(self, interim_result=None, progress=None, continue_monitoring=None):
+    def wait_for_commit_or_rollback(self, continue_monitoring=None):
         '''
+        Called by Task/Worker
+
         Waits for an instruction from the user, prompting for a commit or rollback.
         '''
-        instruction = self.wait_for_instruction(self.ASK_COMMIT, interim_result, continue_monitoring)
+        instruction = self.wait_for_instruction(self.ASK_COMMIT, continue_monitoring)
         if instruction == self.ROLLBACK:
-            self.rollback(progress, interim_result)
+            self.rollback()
         else:
             assert instruction == self.COMMIT, f"Invalid instruction {instruction} received by wait_for_continue_or_abort()"
             return instruction
@@ -490,23 +465,17 @@ class InteractiveBase(Celery_Task):
     # TODO: support a PAUSE instruction which when sent will, if enabled
     # cause a blocking check which waits for a continue instruction.
     # This should support a PAUSE button on the progress bar that just sees the task pause.
-    def check_for_abort(self, progress=None, result=None): 
+    def check_for_abort(self): 
         '''
+        Called by Task/Worker
+
         Checks for an instruction and if it's an abort instruction will 
         abort the task (by raising self.Abort) else will just return the
         instruction. 
-         
-        :param progress: a progress indicator in form of self.progress()
-                         optional, and will provide it to a client with 
-                         the state update to ABORTED. 
-        :param result:   a result indicator. Given the task is aborted 
-                         and won't run to completion an opportunity to
-                         return the partial result here. Provided to 
-                         clients along with the sate update to ABORTED
         '''
         instruction = self.check_for_instruction()
         if instruction == self.ABORT:
-            self.abort(progress, result)
+            self.abort()
         else:
             return instruction
 
@@ -519,49 +488,36 @@ class InteractiveBase(Celery_Task):
         user input for example, and never receives it. It sits around forever. But an effort
         to clean up zombies (tasks in this lost state) can send them a DIE_CLEANLY insttuction
         and the task on receiving it can call this to do that.
+        
+        Raises a Killed exception.
         '''
         self.send_update(state="KILLED")
         self.delete_queues()
         raise self.Exceptions.Killed
 
-    def abort(self, progress=None, result='unfinished result'):
+    def abort(self):
         '''
         Called by Task/Worker. 
         
-        The task should abort.
-        
-        :param progress: latest progress if any.
-        :param result:   latest result if any. 
+        Abort the task! Raises an Abort exception.        
         '''
-        # If no progress indicator is provided use the last one that self.progress 
-        # was used for. Because this is called by the running task instance it has
-        # persistence during execution and self._progress is up to date.
-        if not progress:
-            progress = self._progress
             
-        progress['description'] = f"Aborted"
-        self.send_update(state="ABORTED", meta={'result': result, 'progress': progress})
+        pd = self.progress.as_dict()
+        pd['description'] = f"Aborted"
+        self.send_update(state="ABORTED", meta={'progress': pd})
         raise self.Exceptions.Abort
 
-    def rollback(self, progress=None, result='unfinished result'):
+    def rollback(self):
         '''
         Called by Task/Worker. 
         
-        The task should roll back any open transaction it has.
+        The task should roll back any open transaction it has. 
         
-        :param progress: latest progress if any.
-        :param result:   latest result if any. 
+        Raises a Rollback excteption.         
         '''
-        # If no progress indicator is provided use the last one that self.progress 
-        # was used for. Because this is called by the running task instance it has
-        # persistence during execution and self._progress is up to date.
-        if not progress:
-            progress = self._progress
-            
-        progress['description'] = f"Rolledback"
-        meta = {'result': result, 'progress': progress}
-        
-        self.send_update(state="ROLLEDBACK", meta=meta)
+        pd = self.progress.as_dict()
+        pd['description'] = f"Rolledback"
+        self.send_update(state="ROLLEDBACK", meta={'progress': pd})
         raise self.Exceptions.Rollback
 
     ############################################################################################    
@@ -572,7 +528,6 @@ class InteractiveBase(Celery_Task):
 
     # Include the Django subclass
     
-    from .django import Django
     Django = Django
 
     class Exceptions:

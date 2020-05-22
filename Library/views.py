@@ -15,6 +15,7 @@ from dateutil import parser
 from Library.models import Author, Book, Chapter, Article, Event
 
 from .HTML import Table
+from DjangoTutorial.logging import log
 
 def get_SQL(query):
     '''
@@ -121,6 +122,7 @@ class TransactionManaged_BookCreate(CreateView):
         return context
     
     def post(self, request, *args, **kwargs):  # PyDev @UnusedVariable
+        log.debug("GOT FORM!")
         self.form = self.get_form()
         
         if self.form.is_valid():
@@ -129,6 +131,7 @@ class TransactionManaged_BookCreate(CreateView):
             return self.form_invalid(self.form)
            
     def form_valid(self, form):
+        log.debug("VALID FORM!")
         return add_book.django.start_and_monitor(self.request, form)  # @UndefinedVariable
 
     def form_commit(self, request, form):

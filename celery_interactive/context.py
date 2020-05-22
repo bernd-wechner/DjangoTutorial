@@ -2,8 +2,7 @@ from celery import current_app
 
 from kombu import Connection, Queue, Exchange, Producer
 
-from .config import logger
-from builtins import getattr
+from . import log
 
 def augment_queue(queue):
     '''
@@ -74,8 +73,8 @@ class InteractiveConnection:
         if task.update_via_broker:
             update_queue_name = qnames[task.update_key()]
 
-        logger.debug(f'Connecting to: {current_app.conf.broker_url}')
-        logger.debug(f'\tQueue Name Root: {task.queue_name_root}')
+        log.debug(f'Connecting to: {current_app.conf.broker_url}')
+        log.debug(f'\tQueue Name Root: {task.queue_name_root}')
 
         self.connection = Connection(current_app.conf.broker_url)
          
@@ -84,32 +83,32 @@ class InteractiveConnection:
 
         # TODO,: Check this, looks odd
         c = self.connection.connection
-        logger.debug(f'\tConnection: {task.connection_names(c)[1]}')
+        log.debug(f'\tConnection: {task.connection_names(c)[1]}')
 
         # Create a channel on the connection and log it in the RabbitMQ webmonitor format                     
         ch = c.channel()
         self.channel = ch
-        logger.debug(f'\tChannel: {task.channel_names(ch)[1]}')
+        log.debug(f'\tChannel: {task.channel_names(ch)[1]}')
 
         x = Exchange(task.exchange_name, channel=ch)
         self.exchange = x
-        logger.debug(f'\tExchange: {x.name}')
+        log.debug(f'\tExchange: {x.name}')
 
         # Attach to the management queue (for managing interactions)
         task.management_queue = augmented_queue(management_queue_name, ch, x, task.management_key())
-        logger.debug(f'\tManagement Queue: {task.management_queue.name}')
-        logger.debug(f'\t\tReached via: {task.management_queue.exchange.name} -> {task.management_queue.routing_key}')
+        log.debug(f'\tManagement Queue: {task.management_queue.name}')
+        log.debug(f'\t\tReached via: {task.management_queue.exchange.name} -> {task.management_queue.routing_key}')
         
         # Attach to the instruction queue (for reading instructions)
         task.instruction_queue = augmented_queue(instruction_queue_name, ch, x, task.instruction_key())
-        logger.debug(f'\tInstruction Queue: {task.instruction_queue.name}')
-        logger.debug(f'\t\tReached via: {task.instruction_queue.exchange.name} -> {task.instruction_queue.routing_key}')
+        log.debug(f'\tInstruction Queue: {task.instruction_queue.name}')
+        log.debug(f'\t\tReached via: {task.instruction_queue.exchange.name} -> {task.instruction_queue.routing_key}')
 
         if task.update_via_broker:
             # Attach to the instruction queue (for reading instructions)
             task.update_queue = augmented_queue(update_queue_name, ch, x, task.update_key())
-            logger.debug(f'\tUpdate Queue: {task.update_queue.name}')
-            logger.debug(f'\t\tReached via: {task.update_queue.exchange.name} -> {task.update_queue.routing_key}')
+            log.debug(f'\tUpdate Queue: {task.update_queue.name}')
+            log.debug(f'\t\tReached via: {task.update_queue.exchange.name} -> {task.update_queue.routing_key}')
                     
         return self
     
@@ -140,7 +139,7 @@ class ManagementQueue:
         else:
             management_queue_name = task.name
     
-            logger.debug(f'Connecting to: {current_app.conf.broker_url}')
+            log.debug(f'Connecting to: {current_app.conf.broker_url}')
     
             self.connection = Connection(current_app.conf.broker_url)
              
@@ -152,21 +151,21 @@ class ManagementQueue:
             # information that task.connection_names() needs. A channel() can 
             # be
             c = self.connection
-            logger.debug(f'\tConnection: {task.connection_names(c.connection)[1]}')
+            log.debug(f'\tConnection: {task.connection_names(c.connection)[1]}')
     
             # Create a channel on the connection and log it in the RabbitMQ webmonitor format                     
             ch = c.channel()
             self.channel = ch
-            logger.debug(f'\tChannel: {task.channel_names(ch)[1]}')
+            log.debug(f'\tChannel: {task.channel_names(ch)[1]}')
     
             x = Exchange(task.exchange_name, channel=ch)
             self.exchange = x
-            logger.debug(f'\tExchange: {x.name}')
+            log.debug(f'\tExchange: {x.name}')
     
             # Attach to the management queue (for managing interactions)
             task.management_queue = augmented_queue(management_queue_name, ch, x, task.management_key())
-            logger.debug(f'\tManagement Queue: {task.management_queue.name}')
-            logger.debug(f'\t\tReached via: {task.management_queue.exchange.name} -> {task.management_queue.routing_key}')
+            log.debug(f'\tManagement Queue: {task.management_queue.name}')
+            log.debug(f'\t\tReached via: {task.management_queue.exchange.name} -> {task.management_queue.routing_key}')
             
             return task.management_queue
 
@@ -192,7 +191,7 @@ class InteractiveExchange:
         # We have a task that we need only for the exchnage name and some logging formatters.
         task = self.task
         
-        logger.debug(f'Connecting to: {current_app.conf.broker_url}')
+        log.debug(f'Connecting to: {current_app.conf.broker_url}')
 
         self.connection = Connection(current_app.conf.broker_url)
          
@@ -201,16 +200,16 @@ class InteractiveExchange:
 
         # TODO,: Check this, looks odd
         c = self.connection.connection
-        logger.debug(f'\tConnection: {task.connection_names(c)[1]}')
+        log.debug(f'\tConnection: {task.connection_names(c)[1]}')
 
         # Create a channel on the connection and log it in the RabbitMQ webmonitor format                     
         ch = c.channel()
         self.channel = ch
-        logger.debug(f'\tChannel: {task.channel_names(ch)[1]}')
+        log.debug(f'\tChannel: {task.channel_names(ch)[1]}')
 
         x = Exchange(task.exchange_name, channel=ch)
         self.exchange = x
-        logger.debug(f'\tExchange: {x.name}')
+        log.debug(f'\tExchange: {x.name}')
                     
         return x
     

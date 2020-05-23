@@ -1,6 +1,6 @@
 from .. import log
-from ..celery import Task
-from ..context import InteractiveConnection
+from ..tasks.celery import Task
+from ..contexts.kombu import InteractiveConnection
 
 from django.template import loader
 from django.http.request import HttpRequest
@@ -15,7 +15,7 @@ def get_request_param(request, key):
     Trivial function to conveniently check GET or POST params for a 
     key and return its value. Used so that Django views can receive 
     task IDs and instructions in either form flexibly.
-    
+     
     :param request: A django request object
     :param key:     A key to look for in the request
     '''

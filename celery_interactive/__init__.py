@@ -264,8 +264,16 @@ import logging
  
 log = logging.getLogger(__package__)
 
-# Import the Interactive class from the kombu module
-from . import kombu 
 
-Interactive = kombu.Interactive
+# The default Interactive class (based on kombu communications between Task/Client and Task/Worker)
+# Specifically subclassed here so that a different communications class can be easily hooked in if
+# ever desired. Given Kombu is the way Celery communications it's hard to imagine justifying a different
+# communications tool than Kombu, but the option is there with all Kombu specific.
+#
+# Kombu   
+ 
+from celery_interactive.tasks import kombu 
+class Interactive(kombu.InteractiveKombu):
+    pass
+
 

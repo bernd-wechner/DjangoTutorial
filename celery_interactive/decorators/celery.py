@@ -1,5 +1,5 @@
 from .. import log
-from ..context import InteractiveConnection
+from ..contexts.kombu import InteractiveConnection
 
 from celery import Task as Celery_Task
 from celery.exceptions import Ignore

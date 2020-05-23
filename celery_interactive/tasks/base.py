@@ -2,8 +2,8 @@ from celery import current_app, Task as Celery_Task
 from celery.signals import before_task_publish
 from celery.exceptions import Ignore
 
-from .django import Django
-from .progress import Progress, default_steps, default_stages
+from ..web.django import Django
+from ..progress import Progress, default_steps, default_stages
 
 class InteractiveBase(Celery_Task):
     '''
@@ -551,7 +551,7 @@ class InteractiveBase(Celery_Task):
         class Rollback(Ignore):
             """A task can raise this to trigger a Rollback.
             
-               If the rask is wrapped in Django's @transaction.atomic 
+               If the task is wrapped in Django's @transaction.atomic 
                the exception can trigger a rollback. 
                
                A task can be wrritten as one transaction and ignore

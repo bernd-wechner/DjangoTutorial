@@ -5,12 +5,13 @@ from kombu import Connection, Queue, Exchange, Producer, Consumer
 
 from amqp.exceptions import NotFound
 
-from . import log
-from .base import InteractiveBase
-from .context import ManagementQueue, InteractiveExchange, augment_queue
-from .decorators.celery import ConnectedCall
+from .. import log
+from ..contexts.kombu import ManagementQueue, InteractiveExchange, augment_queue
+from ..decorators.celery import ConnectedCall
 
-class Interactive(InteractiveBase):
+from .base import InteractiveBase
+
+class InteractiveKombu(InteractiveBase):
     '''
     Provides the wrapper around a task function that is needed to support
     Interactive communications. 

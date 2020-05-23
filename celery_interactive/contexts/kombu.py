@@ -2,7 +2,7 @@ from celery import current_app
 
 from kombu import Connection, Queue, Exchange, Producer
 
-from . import log
+from .. import log
 
 def augment_queue(queue):
     '''

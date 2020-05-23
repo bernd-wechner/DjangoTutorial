@@ -3,9 +3,9 @@ from django.template import loader
 from django.forms.models import modelform_factory
 from django.http.response import HttpResponse
 
-from . import log
-from .celery import Task
-from .decorators.django import PulseCheckView
+from .. import log
+from ..tasks.celery import Task
+from ..decorators import django
 
 class Django:
     '''
@@ -197,7 +197,7 @@ class Django:
         failed = None
         success = None
     
-    @PulseCheckView
+    @django.PulseCheckView
     def __pulse_check__(self, request, *args, **kwargs):
         '''
         A Django view, provided, pre-decorated that does only the standard 
@@ -242,23 +242,9 @@ class Django:
         '''
         #TODO: Test this. It's moved into the Django class since last tested.
         task = Task(task_name)
-        task_id = Django.get_request_param(request, "task_id")
-        instruction = Django.get_request_param(request, "instruction")
+        task_id = django.get_request_param(request, "task_id")
+        instruction = django.get_request_param(request, "instruction")
     
         if task and not task_id is None and not instruction is None:
             task.instruct(task_id, instruction)
-
-    @classmethod
-    def get_request_param(cls, request, key):
-        '''
-        Trivial class method to conveniently check GET or POST params for a 
-        key and return its value. Used so that Django views can receive 
-        task IDs and instructions in either form flexibly.
-        
-        :param request: A django request object
-        :param key:     A key to look for in the request
-        '''
-        get = getattr(request,"GET", {}).get(key, None)
-        post = getattr(request,"POST", {}).get(key, None)
-        return post if get is None else get 
 

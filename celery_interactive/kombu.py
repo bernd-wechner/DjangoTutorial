@@ -8,7 +8,7 @@ from amqp.exceptions import NotFound
 from . import log
 from .base import InteractiveBase
 from .context import ManagementQueue, InteractiveExchange, augment_queue
-from .decorators import ConnectedCall
+from .decorators.celery import ConnectedCall
 
 class Interactive(InteractiveBase):
     '''

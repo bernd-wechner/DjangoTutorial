@@ -1,12 +1,10 @@
-import functools, uuid, os
+from .. import log
+from ..context import InteractiveConnection
 
 from celery import Task as Celery_Task
 from celery.exceptions import Ignore
 
-from django.http.request import HttpRequest
-
-from . import log
-from .context import InteractiveConnection
+import functools, uuid, os
 
 class ArgumentError(Exception):
     pass
@@ -110,73 +108,3 @@ class ConnectedCall:
             raise Ignore() 
             
         return result    
-
-class ConnectedView:
-    '''
-    Wraps a view function in a connection and provides the exchange needed 
-    for sending messages and the queue needed to receive messages.
-     
-    :param view_function:
-    '''
-    def __init__(self, view_function):
-        self.view_function = view_function
-        functools.update_wrapper(self, view_function)
-
-    def __get__(self, obj, owner=None):
-        '''
-        This is some rather advanced profound Python trickery.
-        
-        Specifically, if a Class based decorator is to decorate a function or a 
-        method freely, we need some way of handling the self argument that methods
-        receive and functions do not. 
-        
-        It is documented here:
-        
-            https://stackoverflow.com/a/46361833/4002633
-            https://docs.python.org/2/library/functools.html#functools.partial
-            https://docs.python.org/2/library/functools.html#partial-objects
-
-        If a function is decorated, this is never called.
-        If a method is decorated it is called and provides the obj as the first argument to the method.
-        '''
-        return functools.partial(self, obj)        
-    
-    def __call__(self, *args, **kwargs):
-        '''
-        We expect request and task as two args, but if a method is being decorated 
-        there will be a self (the class instance or class itself). We want to be able
-        to decorate standalone functions and methods so  
-        '''
-        # TODO: Test this out, and whether it works properly like.
-        if len(args) > 1 and isinstance(args[1], HttpRequest):
-            args = list(args)
-            method_or_class = args.pop(0)
-        else:
-            method_or_class = None
-
-        # A Django view is passed an HttpRequest a the first arg
-        request = args[0]  # @UnusedVariable
-        
-        # We need an Interactive Task as well which provides the connection information we need
-        # We accept this as a kwarg or as a second arg.
-        task = kwargs.get("task", args[1] if len(args)>1 else None)
-        
-        assert task, "Attempt to connect view without providing an Interactive Task - Needed for connection details."
-        
-        log.debug(f'Connected View: {self.view_function.__name__}')
-
-        log.debug(f'\tGot {len(args)} args:')
-        for v in args:
-            log.debug(f'\t\t{v}')
-                
-        log.debug(f'\tGot {len(kwargs)} kwargs:')
-        for k, v in kwargs.items():
-            log.debug(f'\t\t{k}: {v}')
-        
-        with InteractiveConnection(task) as conn:  # @UnusedVariable
-            if method_or_class:
-                args.insert(0,method_or_class)
-                
-            result = self.view_function(*args, **kwargs)
-                     
-        return result

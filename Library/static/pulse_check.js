@@ -114,10 +114,10 @@ class PulseChecker {
     	// 		progress, 
     	// 		complete,
     	//		canceled,
+    	//	    failed,
     	//		instructed,
     	//		waiting,
     	//		confirm,
-    	// 		success and/or 
     	//
         // progress is itself a dict with elements 
     	// 		step, 
@@ -232,63 +232,67 @@ class PulseChecker {
 		    	}
 		    	
 	    		window.location.href = URL
-	    	}
-
-	        else if (data.waiting) {
-	        	// We should only be here if this.ownConfirmations is true
-	        	// otherwise data.request_page should have arrived and already 
-	        	// been dealt with (i.e. the server will manage the Confirmation
-	        	// our role is complete. But if we land here we need to manage
-	        	// the confirmation. We will have in the data:
-	        	//      prompt
-	        	// 		positive_lbl, positive_URL
-	        	// 		negative_lbl, negative_URL
-	        	// to help. We will need to have two buttons to dress up and display
-	        	// TODO: implement this.
-	        	// Ideal onw_Confirmations is not bool, but a list of two buttons by id 
-	        	// or element. Of if just a bool use default names. 
-	    		const result = data.progress.result || ""; 
-		    	console.log("Waiting.");
-	    		this.onWait(elements, labels, result, data.prompt);
-	        }
-	        
-	        else if (data.complete || data.canceled) {
-	    		const result = data.progress.result || ""; 
-	
-	    		clearTimeout(this.timerID);
-	        	
-	        	console.log("Completed: " + data.complete + "  Canceled: " + data.canceled);
-	            if (data.canceled)
-	            	this.onCancel(elements, labels, result);
-	            else if (data.success)
-	            	this.onSuccess(elements, labels, result);
-	            else
-	            	this.onError(elements, labels, result);
-	
-	            // reset the task ID, so that if we call start we are in fact starting a new task
-	            this.taskId = null;
-	        }
-	        
-	        else if (data.instructed) {
-	        	clearTimeout(this.timerID);
-	        	console.log("Instructed: " + data.instructed);
-	        } 
-	        
+	    	} 
 	        else {
-	        	// setTimeout is vanilla JS and calls pollURL after pollInterval
-	        	// setTimeout(function, milliseconds, param1, param2, ...)
-	        	// where param's are passed to function
-	        	// This recurses of course but setTiemout schedules the call to
-	        	// pollURL in the global context later, so doesn't add to
-	        	// the stack.
-	            this.timerID = setTimeout(this.pollURL, this.pollInterval);
-	        }
-	        
-	    	if (data.progress && !(data.waiting && data.confirm)) {
-	    		const percent = 100 * data.progress.step / data.progress.steps;
-	        	console.log("Rendering Progress: " + percent);
-	            this.onProgress(elements, labels, data.progress);
-	        }
+	        	// Update any porgress first
+	        	// Important so that any other actions like Complete or Canceled
+	        	// update last.
+		    	if (data.progress && !(data.waiting && data.confirm)) {
+		    		const percent = 100 * data.progress.step / data.progress.steps;
+		        	console.log("Rendering Progress: " + percent);
+		            this.onProgress(elements, labels, data.progress);
+		        }
+	        	
+		        if (data.waiting) {
+		        	// We should only be here if this.ownConfirmations is true
+		        	// otherwise data.request_page should have arrived and already 
+		        	// been dealt with (i.e. the server will manage the Confirmation
+		        	// our role is complete. But if we land here we need to manage
+		        	// the confirmation. We will have in the data:
+		        	//      prompt
+		        	// 		positive_lbl, positive_URL
+		        	// 		negative_lbl, negative_URL
+		        	// to help. We will need to have two buttons to dress up and display
+		        	// TODO: implement this.
+		        	// Ideal onw_Confirmations is not bool, but a list of two buttons by id 
+		        	// or element. Of if just a bool use default names. 
+		    		const result = data.progress.result || ""; 
+			    	console.log("Waiting.");
+		    		this.onWait(elements, labels, result, data.prompt);
+		        }
+		        
+		        else if (data.complete || data.canceled || data.failed) {
+		    		const result = data.progress.result || ""; 
+		
+		    		clearTimeout(this.timerID);
+		        	
+		        	console.log("Completed: " + data.complete + "  Canceled: " + data.canceled);
+		            if (data.canceled)
+		            	this.onCancel(elements, labels, result);
+		            else if (data.failed)
+		            	this.onError(elements, labels, result);
+		            else
+		            	this.onSuccess(elements, labels, result);
+		
+		            // reset the task ID, so that if we call start we are in fact starting a new task
+		            this.taskId = null;
+		        }
+		        
+		        else if (data.instructed) {
+		        	clearTimeout(this.timerID);
+		        	console.log("Instructed: " + data.instructed);
+		        } 
+		        
+		        else {
+		        	// setTimeout is vanilla JS and calls pollURL after pollInterval
+		        	// setTimeout(function, milliseconds, param1, param2, ...)
+		        	// where param's are passed to function
+		        	// This recurses of course but setTiemout schedules the call to
+		        	// pollURL in the global context later, so doesn't add to
+		        	// the stack.
+		            this.timerID = setTimeout(this.pollURL, this.pollInterval);
+		        }	        	
+	    	}
         }
     }
     
@@ -370,10 +374,10 @@ class PulseChecker {
     	if (this.stepBar && elements.step) elements.step.style.backgroundColor = '#dc4f63';
     	if (this.stageBar && elements.stage) elements.stage.style.backgroundColor = '#dc4f63';
     	
-        if (elements.status) elements.status.innerHTML = errormessage ? errormessage : "Uh-Oh, something went wrong!";
+        if (elements.status) elements.status.innerHTML = "Uh-Oh, something went wrong!";
 
-	    if (result && elements.result) {
-	    	elements.result.innerHTML = result;
+	    if (errormessage && elements.result) {
+	    	elements.result.innerHTML = errormessage;
         	if (labels.result) labels.result.style.display = result ? 'Block' : 'None';  
         }
     }

@@ -81,7 +81,19 @@ class InteractiveConnection:
         # Connection is lazy. Force a connection now.
         self.connection.connect()
 
-        # TODO,: Check this, looks odd
+        # Get the connection object for channel construction
+        #
+        # This syntax is odd, but we can blame kombu for that.
+        #
+        # self.connection is of type: kombu.connection.Connection
+        #
+        # and it has an attribute: 
+        #
+        # self.connection.connection which is of type: kombu.transport.pyamqp.Connection
+        #
+        # So sname names, different things. The convoluted life of the 
+        # word "connection". But we do need a kombu.transport.pyamqp.Connection
+        # object to create a channel. We can't do that on its parent. 
         c = self.connection.connection
         log.debug(f'\tConnection: {task.connection_names(c)[1]}')
 
@@ -198,7 +210,19 @@ class InteractiveExchange:
         # Connection is lazy. Force a connection now.
         self.connection.connect()
 
-        # TODO,: Check this, looks odd
+        # Get the connection object for channel construction
+        #
+        # This syntax is odd, but we can blame kombu for that.
+        #
+        # self.connection is of type: kombu.connection.Connection
+        #
+        # and it has an attribute: 
+        #
+        # self.connection.connection which is of type: kombu.transport.pyamqp.Connection
+        #
+        # So sname names, different things. The convoluted life of the 
+        # word "connection". But we do need a kombu.transport.pyamqp.Connection
+        # object to create a channel. We can't do that on its parent. 
         c = self.connection.connection
         log.debug(f'\tConnection: {task.connection_names(c)[1]}')
 

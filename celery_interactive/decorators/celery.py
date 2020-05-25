@@ -79,10 +79,6 @@ class ConnectedCall:
                 # provide the PID of the Worker Pool Process we're running in. 
                 task.send_update(state="STARTED", meta={'pid': os.getpid()})
                 
-                # This is what super().__call does to wind up. So we do it it here too.
-#                 _task_stack.push(task)
-#                 task.push_request(args=args, kwargs=kwargs)
-
                 result = self.call_function(*args, **kwargs)
 
                 # Leave the exchange alone (it's reusable for other Interactive tasks)
@@ -92,13 +88,8 @@ class ConnectedCall:
                 log.error(f'TASK __CALL__ ERROR: {e}')
                 import traceback
                 log.error(traceback.format_exc())
-                # TODO: result to date?
-                task.send_update(state="FAILURE", meta={'result': 'result to date', 'reason': str(e)})
+                task.send_update(state="FAILURE", meta=str(e))
                 result = None
-#             finally:
-                # This is what super().__call does to unwind. So we do it it too.
-#                 task.pop_request()
-#                 _task_stack.pop()
             
             # Wind down code can go here.
             # We explicitly do not delete the Queues that InteractiveConnection created.

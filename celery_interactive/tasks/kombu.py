@@ -6,7 +6,7 @@ from kombu import Connection, Queue, Exchange, Producer, Consumer
 from amqp.exceptions import NotFound
 
 from .. import log
-from ..contexts.kombu import ManagementQueue, InteractiveExchange, augment_queue
+from ..contexts.kombu import ManagementQueue, InteractiveExchange, augment_queue, InteractiveConnection
 from ..decorators.celery import ConnectedCall
 
 from .base import InteractiveBase
@@ -245,7 +245,7 @@ class InteractiveKombu(InteractiveBase):
         
         return self.indexed_queue_name_root(i)
     
-    def create_queues(self, initial_status=None):
+    def create_queues(self):
         '''
         Creates (or ensure the existence of) the queues that an Interactive 
         task needs. 
@@ -316,9 +316,6 @@ class InteractiveKombu(InteractiveBase):
                 log.debug(f'\tManagement Queue: {q.name}')
                 self.management_queue = augment_queue(q)
                 
-                # Kill any zombie queues first
-                self.kill_zombies()
-                
                 # First configure the queue names
                 if self.use_indexed_queue_names:
                     qname_root = self.first_free_indexed_queue_name_root()
@@ -338,31 +335,30 @@ class InteractiveKombu(InteractiveBase):
                         q = Queue(qname, exchange=x, channel=ch, routing_key=k, durable=True)
                         q.declare() # Makes the queue appears on the RabbitMQ web monitor
 
-                        if k == self.instruction_key() and initial_status:
+                        if k == self.instruction_key():
                             log.debug(f'\tInstruction Queue: {q.name}')
                             self.instruction_queue = augment_queue(q)
     
                         elif k == self.update_key():
                             log.debug(f'\tUpdate Queue: {q.name}')
                             self.update_queue = augment_queue(q)
-                            
-                            if initial_status:
-                                updt_msg = q.get()
-                                if updt_msg and isinstance(updt_msg.payload, tuple):
-                                    # If a valid tuple was on the queue, requeue it
-                                    # Pretty unlikely seeings we just created the queue! But still...
-                                    updt_msg.requeue()
-                                else:
-                                    # If an invalid message (not a tuple) was on the queue
-                                    # just ack() it (to get rid of it)
-                                    if updt_msg:
-                                        updt_msg.ack()
-        
-                                    assert initial_status, "create_queues: When and update_key is defined an initial_message must be defined when creating the queue."
-        
-                                    # We put                             
-                                    p = Producer(ch, exchange=q.exchange, routing_key=q.routing_key)
-                                    p.publish(initial_status)
+
+                            # Ensure at least one valid message is on the update queue.
+                            # Mainly so that get_updates() can safely assume there is at least one
+                            updt_msg = q.get()
+                            if updt_msg and isinstance(updt_msg.payload, tuple):
+                                # If a valid tuple was on the queue, requeue it
+                                # Pretty unlikely seeings we just created the queue! But still...
+                                updt_msg.requeue()
+                            else:
+                                # If an invalid message (not a tuple) was on the queue
+                                # just ack() it (to get rid of it)
+                                if updt_msg:
+                                    updt_msg.ack()
+    
+                                # Put a valid message on the queue so it's not empty
+                                p = Producer(ch, exchange=q.exchange, routing_key=q.routing_key)
+                                p.publish(("UPDATE_QUEUE_CREATED",))
                             
             except Exception as e:
                 log.error(f'QUEUE CREATION ERROR: {e}')
@@ -425,7 +421,12 @@ class InteractiveKombu(InteractiveBase):
         Technically should not arise as only the management queue is
         durable and the others should die with a server restart. 
         '''
+
+        log.debug(f'KILL ZOMBIES:')
+        log.debug(f'\tZombie Search, getting management data...')
         mgmt_data = self.get_management_data(all=True)
+
+        log.debug(f'\tZombie Search, getting active ids ...')
         active = current_app.control.inspect().active()
         
         active_ids = set()
@@ -436,11 +437,11 @@ class InteractiveKombu(InteractiveBase):
                     
         managed_ids = set(mgmt_data.keys()) if mgmt_data else set()
         
-        log.debug(f'Zombie Search, active ids: {active_ids}')
-        log.debug(f'Zombie Search, managed ids: {managed_ids}')
-        log.debug(f'Zombie Search, happy with: {active_ids & managed_ids}')
-        log.debug(f'Zombie Search, will delete from management data: {managed_ids - active_ids}')
-        log.debug(f'Zombie Search, will cull from active tasks: {active_ids - managed_ids}')
+        log.debug(f'\tZombie Search, active ids: {active_ids}')
+        log.debug(f'\tZombie Search, managed ids: {managed_ids}')
+        log.debug(f'\tZombie Search, happy with: {active_ids & managed_ids}')
+        log.debug(f'\tZombie Search, will delete from management data: {managed_ids - active_ids}')
+        log.debug(f'\tZombie Search, will cull from active tasks: {active_ids - managed_ids}')
 
         # Any tasks being managed but not active are not needed in in management data
         # But they may have left zombie queues lying around. So we look for and delete the
@@ -477,9 +478,65 @@ class InteractiveKombu(InteractiveBase):
                         # In mean time must specify content encoding explicitly
                         x.publish(self.DIE_CLEANLY, routing_key=self.instruction_key(task_id), content_encoding='utf-8')
             except Exception as e:
-                log.error(f'ZOMBIE KILL ERROR: {e}')
+                log.error(f'\tZOMBIE KILL ERROR: {e}')
                 
-        log.debug(f'Zombie Kill Done.')
+        log.debug(f'\tZombie Kill Done.')
+
+    def send_context(self):
+        # Send a structured list of Celery PIDs as an update
+        #
+        # Stats are reported in three tiers:
+        #    key 1: node name - a node is one worker in a cluster. A cluster
+        #           may have many nodes. See:
+        #             https://stackoverflow.com/a/61316552/4002633
+        #             https://docs.celeryproject.org/en/latest/reference/celery.bin.multi.html#celery.bin.multi.MultiTool.MultiParser.Node
+        #           The name is not meaningful per se, and casn't be divined other than 
+        #           by looking at the keys of the stats dict. By default nodes are named 
+        #           as celery@hostname, or if more than one node in a cluster, celery1@hostname, 
+        #           celery2@hostname etc. But it can be configured when the worker is started.
+        #    key 2: 'pid' holds the worker PID and 'pool' holds a pool dict
+        #    key 3: 'processes' holds a list of PIDs of the pool processes for this node.
+        #
+        # We can capture all these PIDs in a single dir keyed on node PID with
+        # a list of Pool PIDs as the value. And that might be useful for us to guage
+        # stability of the worker pool. Or not.
+        log.debug(f"Collecting Celery stats...") 
+        stats = current_app.control.inspect().stats()
+        log.debug(f"Packaging stats ...") 
+        
+        assert stats, "Celery appears to be down! Can't start I Interactive Tasks without Celery."
+        
+        PIDs = {}
+        for node in stats:
+            PIDs[stats[node]['pid']] = stats[node]['pool']['processes']
+        
+        log.debug(f"Sending Context: {PIDs}") 
+
+        # TODO: Consider why we want to send this as an update. 
+        #       We worked it out in the client and can just store 
+        #       it in session if the client needs it. It's sort of 
+        #       historic we had it as the initial message on the 
+        #       update queue so there's always be at least one. 
+        #       But because collecting stats is so slow we moved it 
+        #       into a sub thread. 
+        #
+        #       The reason we want to know this and bind it to the 
+        #       given task  is that it can help us to spot changes.
+        #       Specifically the client requesting progress updates
+        #       can notice that the worker that was delivering them
+        #       has died. For this this reason we actually would need
+        #       the worker PID and we wouldn't need this list at time
+        #       the task started. Maybe we don't need this at all.
+        #
+        # If the connection is not available, secure one
+        # This can happen when this is run in a sub thread and the  
+        # parent thread finsihed and closed the connection before
+        # we're done. The very reason we ran this in a subthread.
+        if self.update_via_broker and not self.update_queue.channel.is_open:
+            with InteractiveConnection(self) as conn:  # @UnusedVariable
+                self.send_update("CONTEXT", PIDs)
+        else:
+            self.send_update("CONTEXT", PIDs)
     
     def connection_names(self, connection):
         '''
@@ -743,12 +800,13 @@ class InteractiveKombu(InteractiveBase):
         :param meta:  A dictionary (with string keys) containing extra information for the update
         '''
         if self.update_via_backend:
-            log.debug(f'Updating State, state:{state}, meta: {meta}')
+            log.debug(f'Updating State (in backend), state:{state}, meta: {meta}')
             self.update_state(state=state, meta=meta)
             
         if self.update_via_broker:
-            log.debug(f'Sending Update: {self.request.id} -> {state}, {meta}')
-            m = (state, meta)
+            log.debug(f'Sending Update (via broker): {self.request.id} -> {state}, {meta}')
+            seen = False
+            m = (state, meta, seen)
             self.update_queue.publish(m)
             log.debug(f'\tSent: {m} to exchange {self.update_queue.exchange.name} with routing key {self.update_queue.routing_key}')
 
@@ -756,11 +814,14 @@ class InteractiveKombu(InteractiveBase):
         '''
         A basic Result class that masquerades as a simple Celery.AsyncResult class.
         
-        Simple has a clear meaning here. All it does is make the state, info/result/meta
+        "Simple" has a clear meaning here. All it does is make the state, info/result/meta
         attributes available in exactly the same way AsyncResult does. A list of Result 
         objects is what get_update returns and each one can, like an AsyncResult be asked
         for state, and info/result (these are two names for the same thing in Celery 
         AsyncResult.
+        
+        It implements one extra property, seen, which is used to manage the update
+        queue when update_via_broker is enabled.
         
         The info/result/meta story:
             AsyncResult supports a result and info attribute that are identical.
@@ -772,7 +833,7 @@ class InteractiveKombu(InteractiveBase):
         state = status = None
         info = result = meta = None
         
-        def __init__(self, state, meta):
+        def __init__(self, state, meta=None, seen=False):
             # See: https://docs.celeryproject.org/en/stable/reference/celery.result.html#celery.result.AsyncResult.state
             #
             # Standard states are:
@@ -803,9 +864,22 @@ class InteractiveKombu(InteractiveBase):
             #          See:  https://docs.celeryproject.org/en/stable/reference/celery.app.task.html#celery.app.task.Task.update_state
             self.info = self.result = self.meta = meta
             
+            # The seen flag. THis an internal convenenience, used because we always leave one
+            # status update on the update queue, so that the last status of the task can always
+            # be checked. But in so doing we want to know if it's already been seen. This is ALL
+            # managed in get_updates (anyone acessing the update queue independently cannout be
+            # catered for here, that is, "Seen" means seen by get_updates() is all.
+            self.seen = seen
+            
         def __eq__(self, other):
             return self.status == other.status and self.info == other.info
 
+        def as_payload(self):
+            '''
+            The Result as an update_queue message payload.
+            '''
+            return (self.state, self.meta, self.seen)
+        
     def get_updates(self, task_id=None):
         '''
         Called by a client (Task/Client) to get updates sent by a running worker (Task/Worker)  
@@ -844,22 +918,42 @@ class InteractiveKombu(InteractiveBase):
                     if message:
                         messages.append(message)
                         payload = message.payload
-                        # The payload is a 2-tuple containing state and info
+                        
+                        # The payload is a 3-tuple containing state, info and a seen flag
                         result = self.Result(*payload)
+                        
                         broker_updates.append(result)
                         log.debug(f'\tBroker update: {result.status}, {result.info}')
                     else:
                         break
+
+                # If there's only one broker_updates we return that, but if there is more than 
+                # one we don't return the first one if it's been seen. 
+                if len(broker_updates) > 1:
+                    if broker_updates[0].seen:
+                        log.debug(f'\tAlready seen: {broker_updates[0].status}, {broker_updates[0].info}, so ignoring that.')
+                        broker_updates.pop(0)
                     
                 # The last message should be requeued so that we always have the last update
                 # available at least (the queue is never empty). This mimics Celery's AsyncResult
                 # in that we will always have a result available. All other ones we can ack() to
                 # remove them from the queue.
+                #
+                # But we don't pasively requeue we ack it, and requeue it actively with a flag to 
+                # let a consumer known it's been delivered in a get_updates() call before, that it's
+                # been "seen" already. That's important so that on subsequent get_updates(). This 
+                # flag can be set and inspected herein during update delivery.
                 if messages:
-                    for message in messages[:-1]:
+                    last_payload = messages[-1].payload
+                    # The payload is a 3-tuple containing state, info and a seen flag
+                    last_payload[2] = True
+
+                    # Remove all the messages from the queue
+                    for message in messages:
                         message.ack()
-                        
-                    messages[-1].requeue()
+                    
+                    # Republish the lasty payload (flagged as "seen")
+                    self.update_queue.publish(last_payload)
                 
             if self.update_via_broker and not self.update_via_backend:
                 return broker_updates

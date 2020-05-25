@@ -2,8 +2,11 @@ from celery import current_app, Task as Celery_Task
 from celery.signals import before_task_publish
 from celery.exceptions import Ignore
 
+from .. import log
 from ..web.django import Django
 from ..progress import Progress, default_steps, default_stages
+
+import time, threading
 
 class InteractiveBase(Celery_Task):
     '''
@@ -251,39 +254,8 @@ class InteractiveBase(Celery_Task):
             # Create the queues that we need (this also:
             #  1) Establishes a queue name root (qnr)
             #  2) Saves the qnr to management data
-            if task.update_via_broker:
-                # TODO: consider what meta data we might add to this status
-                #
-                # I think the PIDs of celery and it's pool workers is a good 
-                # thing to record with this state. 
-                #
-                # Stats are reported in three tiers:
-                #    key 1: node name - a node is one worker in a cluster. A cluster
-                #           may have many nodes. See:
-                #             https://stackoverflow.com/a/61316552/4002633
-                #             https://docs.celeryproject.org/en/latest/reference/celery.bin.multi.html#celery.bin.multi.MultiTool.MultiParser.Node
-                #           The name is not meaningful per se, and casn't be divined other than 
-                #           by looking at the keys of the stats dict. By default nodes are named 
-                #           as celery@hostname, or if more than one node in a cluster, celery1@hostname, 
-                #           celery2@hostname etc. But it can be configured when the worker is started.
-                #    key 2: 'pid' holds the worker PID and 'pool' holds a pool dict
-                #    key 3: 'processes' holds a list of PIDs of the pool processes for this node.
-                #
-                # We can capture all these PIDs in a single dir keyed on node PID with
-                # a list of Pool PIDs as the value. And that might be useful for us to guage
-                # stability of the worker pool. Or not. 
-                stats = current_app.control.inspect().stats()
-                
-                assert stats, "Celery appears to be down! Can't start I Interactive Tasks without Celery."
-                
-                PIDs = {}
-                for node in stats:
-                    PIDs[stats[node]['pid']] = stats[node]['pool']['processes']
-                
-                initial_status = ("REQUESTED", PIDs)
-                qnr = task.create_queues(initial_status)
-            else:
-                qnr = task.create_queues()
+            log.debug(f"Creating Queues ...") 
+            qnr = task.create_queues()
             
             # INFORM TASK/WORKER OF THE queue_name_root we are using
             #
@@ -294,6 +266,14 @@ class InteractiveBase(Celery_Task):
             # something to the task before it runs.
             task_kwargs = kwargs["body"][1]
             task_kwargs["queue_name_root"] = qnr
+            
+            # Farm some time consuming work out to a background thread so
+            # as not to hold up delivery of a response.
+            clean_up = threading.Thread(target=self.kill_zombies)
+            send_context = threading.Thread(target=self.send_context)
+            
+            clean_up.start()
+            send_context.start()
             
         # If we only want one instance of task running at time, 
         # enforced this now before we publish the task (ask a 
@@ -459,7 +439,7 @@ class InteractiveBase(Celery_Task):
         if instruction == self.ROLLBACK:
             self.rollback()
         else:
-            assert instruction == self.COMMIT, f"Invalid instruction {instruction} received by wait_for_continue_or_abort()"
+            assert instruction == self.COMMIT, f"Invalid instruction {instruction} received by wait_for_commit_or_rollback()"
             return instruction
 
     # TODO: support a PAUSE instruction which when sent will, if enabled

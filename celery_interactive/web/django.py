@@ -7,6 +7,8 @@ from .. import log
 from ..tasks.celery import Task
 from ..decorators import django
 
+import time
+
 class Django:
     '''
     An encapsulation of Django specific settings (attributes) and function (methods).
@@ -105,17 +107,22 @@ class Django:
 
     def __start__(self, request, form):
         packed_form = self.task.django.pack_form(request, form)
+        log.debug(f"Starting tast with packed form {packed_form}")
         result = self.task.start(form=packed_form)
+        log.debug(f"Task is started with id: {result.task_id}")
         return result.task_id
 
     def __monitor__(self, response, request):
+        log.debug(f"Loading template {self.task.django.templates.monitor}")
         template = loader.get_template(self.task.django.templates.monitor)
         response["title"] = self.task.monitor_title if self.task.monitor_title else "<No Title Provided>"
+        log.debug(f"Rendering template with context {response}")
         return HttpResponse(template.render(response, request))
 
     def __start_and_monitor__(self, request, form):
         log.debug(f"Starting {self.task.name}")
         self.task.request.id = self.task.django.start(request, form)
+        log.debug(f"Started {self.task.name}, starting Monitor")
         response = {'name':      self.task.name, 
                     'shortname': self.task.shortname, 
                     'id':        self.task.request.id, 

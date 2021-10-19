@@ -54,8 +54,8 @@ class InteractiveKombu(InteractiveBase):
     '''
     # Use indexed queue names? If True adds a small overhead in finding a free 
     # indexed queue name on the broker when the task runs. This can make things
-    # a little easier to minitor if needed than using that UUID task_id in the
-    # queue name. But the UUID is available without consultingt he broker so 
+    # a little easier to monitor if needed than using the UUID task_id in the
+    # queue name. But the UUID is available without consulting the broker so 
     # marginally more efficient to use.
     #
     # Can of course be configured in any function decorated with  @Interactive.Config
@@ -69,7 +69,7 @@ class InteractiveKombu(InteractiveBase):
     #
     # update_queue is used only if updates_via_broker is True
     #
-    # Basically A knmbu.Queue is for reading messages, and a kombu.Producer for writing messages.
+    # Basically A kombu.Queue is for reading messages, and a kombu.Producer for writing messages.
     #
     # These are assigned values in:
     #
@@ -85,6 +85,76 @@ class InteractiveKombu(InteractiveBase):
     instruction_queue = None    # Named using queue_name_root
     update_queue = None         # Named using queue_name_root
     
+    class Result:
+        '''
+        A basic Result class that masquerades as a simple Celery.AsyncResult class.
+        
+        "Simple" has a clear meaning here. All it does is make the state, info/result/meta
+        attributes available in exactly the same way AsyncResult does. A list of Result 
+        objects is what get_update returns and each one can, like an AsyncResult be asked
+        for state, and info/result (these are two names for the same thing in Celery 
+        AsyncResult).
+        
+        It implements one extra property, seen, which is used to manage the update
+        queue when update_via_broker is enabled.
+        
+        The info/result/meta story:
+            AsyncResult supports a result and info attribute that are identical.
+            Celery's update_state takes a meta kwarg, which is used to populate 
+            result/info. So we support all three names in this masquerade.
+            
+            They are in Celery terms synonyms in the AsyncResult object. 
+        '''
+        state = status = None
+        info = result = meta = None
+        
+        def __init__(self, state, meta=None, seen=False):
+            # See: https://docs.celeryproject.org/en/stable/reference/celery.result.html#celery.result.AsyncResult.state
+            #
+            # Standard states are:
+            # 
+            # PENDING    
+            #     The task is waiting for execution.
+            # STARTED
+            #     The task has been started.
+            # RETRY
+            #     The task is to be retried, possibly because of failure.
+            # FAILURE
+            #     The task raised an exception, or has exceeded the retry limit. The result attribute then contains the exception raised by the task.
+            # SUCCESS
+            #     The task executed successfully. The result attribute then contains the tasks return value.            
+            self.state = self.status = state
+            
+            # See: https://docs.celeryproject.org/en/stable/reference/celery.result.html#celery.result.AsyncResult.info
+            #
+            # Can be either:
+            #
+            # What the task returns - in the case of SUCCESS
+            # An exception instance - in case of FAILURE
+            #
+            # Anything else for custom custom states but notably:
+            #
+            # A dict - in the case of any call to task.update_state in which case
+            #          in which case it has the value of the meta argument (which is a dict)
+            #          See:  https://docs.celeryproject.org/en/stable/reference/celery.app.task.html#celery.app.task.Task.update_state
+            self.info = self.result = self.meta = meta
+            
+            # The seen flag. This an internal convenenience, used because we always leave one
+            # status update on the update queue, so that the last status of the task can always
+            # be checked. But in so doing we want to know if it's already been seen. This is ALL
+            # managed in get_updates (anyone acessing the update queue independently cannot be
+            # catered for here, that is, "Seen" means seen by get_updates() is all.
+            self.seen = seen
+            
+        def __eq__(self, other):
+            return self.status == other.status and self.info == other.info
+
+        def as_payload(self):
+            '''
+            The Result as an update_queue message payload.
+            '''
+            return (self.state, self.meta, self.seen)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
@@ -101,7 +171,7 @@ class InteractiveKombu(InteractiveBase):
         # "Any keyword argument passed to the task decorator will actually be set as an 
         # attribute of the resulting task class"
         #
-        # The configuration function can modify the task instance freely
+        # The configuration function can modify the task instance freely,
         # notably defining the templates in task.django.templates but can 
         # also override methods and more customising the Interactive Task
         # as it sees fit.
@@ -116,19 +186,15 @@ class InteractiveKombu(InteractiveBase):
         '''
         Builds a default queue name that an Interactive task can use.
         
-        If use_indexed_queue_names is True, we'll use indexed queue names
-        and not this default. That name must be communicated to a client 
-        with a "QUEUE" state update. If it is false we can use this queue
-        name, and don't need to communicate it to a client as it can be
-        constructed from the task's name and running task_id alone.
-        
-        To wit, a client can use this queue name until a QUEUE state 
-        update arrives but it must accept that the queue of this name 
-        may not exist. 
+        If use_indexed_queue_names is True, we'll use indexed queue
+        names and not this default (task id is a UUID and hence usefully
+        unique but when monitoring queues for diagnostic purposes hard
+        to sequence (know which came first).   
         '''
-        # Can be called with no arguments from the celery worker side
-        # but from the client side need to provide a task_id either as
-        # and argument or plugged into self.request.id.
+        # Can be called with no arguments from by Task/Worker 
+        # but from Task/Client side nseed to provide a task_id either 
+        # as an argument or plugged into self.request.id. Task/Worker
+        # always has self.request.id set by celery. 
         if not task_id:
             task_id = self.request.id
             
@@ -276,11 +342,11 @@ class InteractiveKombu(InteractiveBase):
 
         There is an odd asymmetry in Kombu.
         
-        We can send messages using only the known exchange an the task_id as a routing 
-        key. Put to read a queue, we need to know its name. The management queue has a 
+        We can send messages using only the known exchange and the task_id as a routing 
+        key. But to read a queue, we need to know its name. The management queue has a 
         predictable name (that of the task), the instruction and update queues less so.
         We can name them using the task_id, or sequentially (if use_indexed_queue_names
-        is True, which is cleaner if monitoring the broker as the tas_id which is UUID 
+        is True, which is cleaner if monitoring the broker as the task_id which is a UUID 
         is a long messy thing to have in a queue name).
         
         The task will receive the queue name root as a kwarg "queue_name_root" but only 
@@ -427,7 +493,11 @@ class InteractiveKombu(InteractiveBase):
         mgmt_data = self.get_management_data(all=True)
 
         log.debug(f'\tZombie Search, getting active ids ...')
-        active = current_app.control.inspect().active()
+        try:
+            active = current_app.control.inspect().active()
+        except Exception as e:
+            log.error(f'ZOMBIE SEARCH ERROR: {e}')
+            active = {}
         
         active_ids = set()
         for node_id in active:
@@ -504,7 +574,7 @@ class InteractiveKombu(InteractiveBase):
         stats = current_app.control.inspect().stats()
         log.debug(f"Packaging stats ...") 
         
-        assert stats, "Celery appears to be down! Can't start I Interactive Tasks without Celery."
+        assert stats, "Celery appears to be down! Can't start Interactive Tasks without Celery."
         
         PIDs = {}
         for node in stats:
@@ -530,7 +600,7 @@ class InteractiveKombu(InteractiveBase):
         #
         # If the connection is not available, secure one
         # This can happen when this is run in a sub thread and the  
-        # parent thread finsihed and closed the connection before
+        # parent thread finished and closed the connection before
         # we're done. The very reason we ran this in a subthread.
         if self.update_via_broker and not self.update_queue.channel.is_open:
             with InteractiveConnection(self) as conn:  # @UnusedVariable
@@ -707,7 +777,8 @@ class InteractiveKombu(InteractiveBase):
         a Kombu producer pointing to the instruction queue. The ConnectedView
         decorator wraps a view in a connection that provides that attribute.
         
-        :param instruction: The instruction to send (a string is ideal but kombu has to be able to serialize it)
+        :param instruction: The instruction to send (a string is ideal but 
+                            whatever it is kombu has to be able to serialize it)
         '''
         log.debug(f'Sending Instruction: {instruction} -> {self.request.id}')
         
@@ -738,6 +809,8 @@ class InteractiveKombu(InteractiveBase):
             instruction = message.payload       # get an instruction if available
             message.ack()                       # remove message from queue
 
+            self.send_update(state="INSTRUCTED", meta={"instruction": instruction})
+
             if instruction == self.DIE_CLEANLY:
                 self.die_cleanly()
 
@@ -766,6 +839,7 @@ class InteractiveKombu(InteractiveBase):
             nonlocal instruction
             instruction = body  # Not really an @UnusedVariable
             message.ack()
+            self.send_update(state="INSTRUCTED", meta={"instruction": instruction})
         
         meta = {'prompt': prompt, 'progress': self.progress.as_dict(), 'continue_monitoring': continue_monitoring}
         self.send_update(state="WAITING", meta=meta)
@@ -776,7 +850,7 @@ class InteractiveKombu(InteractiveBase):
         ch = q.exchange.channel
         c = ch.connection
         with Consumer(ch, queues=q, callbacks=[got_message], accept=["text/plain"]):
-            # drain_events blocks until a message arrives then got_messag() is called.  
+            # drain_events blocks until a message arrives then got_message() is called.  
             c.drain_events()
         
         log.info(f'RECEIVED instruction: {instruction}')
@@ -806,85 +880,21 @@ class InteractiveKombu(InteractiveBase):
         if self.update_via_broker:
             log.debug(f'Sending Update (via broker): {self.request.id} -> {state}, {meta}')
             seen = False
+            
+            # Celery EXCEPTION_STATES carry meta in an Exception wrapper
+            # That won't serialize on its own and Celery's backend has a serializer 
+            if isinstance(meta, Exception):
+                meta = self.backend.prepare_exception(meta)
+                
             m = (state, meta, seen)
             self.update_queue.publish(m)
             log.debug(f'\tSent: {m} to exchange {self.update_queue.exchange.name} with routing key {self.update_queue.routing_key}')
 
-    class Result:
-        '''
-        A basic Result class that masquerades as a simple Celery.AsyncResult class.
-        
-        "Simple" has a clear meaning here. All it does is make the state, info/result/meta
-        attributes available in exactly the same way AsyncResult does. A list of Result 
-        objects is what get_update returns and each one can, like an AsyncResult be asked
-        for state, and info/result (these are two names for the same thing in Celery 
-        AsyncResult.
-        
-        It implements one extra property, seen, which is used to manage the update
-        queue when update_via_broker is enabled.
-        
-        The info/result/meta story:
-            AsyncResult supports a result and info attribute that are identical.
-            Celery's update_state takes a meta kwarg, which is used to populate 
-            result/info. So we support all three names in this masquerade.
-            
-            They are in Celery terms synonyms in the AsyncResult object. 
-        '''
-        state = status = None
-        info = result = meta = None
-        
-        def __init__(self, state, meta=None, seen=False):
-            # See: https://docs.celeryproject.org/en/stable/reference/celery.result.html#celery.result.AsyncResult.state
-            #
-            # Standard states are:
-            # 
-            # PENDING    
-            #     The task is waiting for execution.
-            # STARTED
-            #     The task has been started.
-            # RETRY
-            #     The task is to be retried, possibly because of failure.
-            # FAILURE
-            #     The task raised an exception, or has exceeded the retry limit. The result attribute then contains the exception raised by the task.
-            # SUCCESS
-            #     The task executed successfully. The result attribute then contains the tasks return value.            
-            self.state = self.status = state
-            
-            # See: https://docs.celeryproject.org/en/stable/reference/celery.result.html#celery.result.AsyncResult.info
-            #
-            # Can be either:
-            #
-            # What the task returns - in the case of SUCCESS
-            # An exception instance - in case of FAILURE
-            #
-            # Anything else for custom custom states but notably:
-            #
-            # A dict - in the case of any call to task.update_state in which case
-            #          in which case it has the value of the meta argument (which is a dict)
-            #          See:  https://docs.celeryproject.org/en/stable/reference/celery.app.task.html#celery.app.task.Task.update_state
-            self.info = self.result = self.meta = meta
-            
-            # The seen flag. THis an internal convenenience, used because we always leave one
-            # status update on the update queue, so that the last status of the task can always
-            # be checked. But in so doing we want to know if it's already been seen. This is ALL
-            # managed in get_updates (anyone acessing the update queue independently cannout be
-            # catered for here, that is, "Seen" means seen by get_updates() is all.
-            self.seen = seen
-            
-        def __eq__(self, other):
-            return self.status == other.status and self.info == other.info
-
-        def as_payload(self):
-            '''
-            The Result as an update_queue message payload.
-            '''
-            return (self.state, self.meta, self.seen)
-        
     def get_updates(self, task_id=None):
         '''
         Called by a client (Task/Client) to get updates sent by a running worker (Task/Worker)  
         
-        Fetches the latest updates from the a running instance of this task. It needs a task id and
+        Fetches the latest updates from a running instance of this task. It needs a task id and
         this can be provided as a kwarg or found in self.request.id.
          
         :param task_id:
@@ -946,6 +956,7 @@ class InteractiveKombu(InteractiveBase):
                 if messages:
                     last_payload = messages[-1].payload
                     # The payload is a 3-tuple containing state, info and a seen flag
+                    assert len(last_payload) == 3, f"Update sent via broker with must have 3 elements. Got: {last_payload}"
                     last_payload[2] = True
 
                     # Remove all the messages from the queue
@@ -963,7 +974,7 @@ class InteractiveKombu(InteractiveBase):
                 if broker_updates:
                     # All is good if the backend update agrees with the last broker update
                     if backend_update == broker_updates[-1]:
-                        log.debug(f'\tBackend and Broker agree.')
+                        log.debug(f'\tBackend and Broker agree. Returning the Broker updates.')
                         return broker_updates
                     else:
                         # If we are prioritising the broker ignore the backend result and return the brokers
@@ -988,4 +999,4 @@ class InteractiveKombu(InteractiveBase):
             return broker_updates
         else:
             log.debug(f"get_updates: No task_id provided or found in self.request.id")
-            return [] 
+            return []

@@ -1,6 +1,34 @@
+"""Provides two decorators fro Django Views:
+
+ConnectedView
+
+    Which simply wraps the view in an InteractiveConnection to a nominated task.
+    It has no configurations per se, but requires the decorated function or method
+    to take two arguments:
+        request:    A Django requestobject as passed to views. 
+                    i.e. a django.http.request.HttpRequest object
+        task:       an Celery Interactive task  
+
+PulseCheckView
+
+    Which decorates a Django view. That view must return a dict as this decorator is
+    designed fro AJAX calls (and returns a dict, augmented with feedback regarding 
+    responses to the standard instructions. Before the view is called the standard 
+    instructions are checked and acted on.
+    
+    The standard rewquest checked for are:
+    
+    "cancel" - requests a long running task to stop
+    
+    "continue"/"abort" - responses to a task that is waiting on a response to ASK_CONTINUE
+    "commit"/"rollback" - reponses to a task that is waiting on a response to ASK_COMMIT
+"""
+
 from .. import log
 from ..tasks.celery import Task
 from ..contexts.kombu import InteractiveConnection
+
+from celery import Task as Celery_Task
 
 from django.template import loader
 from django.http.request import HttpRequest
@@ -8,7 +36,8 @@ from django.http.response import HttpResponse
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
 
-import functools, json
+import functools, json, time
+
 
 def get_request_param(request, key):
     '''
@@ -64,31 +93,31 @@ class ConnectedView:
         If a function is decorated, this is never called.
         If a method is decorated it is called and provides the obj as the first argument to the method.
         '''
-        return functools.partial(self, obj)        
+        return functools.partial(self, obj)
     
     def __call__(self, *args, **kwargs):
         '''
         We expect request and task as two args, but if a method is being decorated 
         there will be a self (the class instance or class itself). We want to be able
-        to decorate standalone functions and methods so  
+        to decorate standalone functions and methods so need to check the args carefully.  
         '''
-        # TODO: Test this out, and whether it works properly like.
         if len(args) > 1 and isinstance(args[1], HttpRequest):
+            # We conclude that args[0] is self from the decorated method
             args = list(args)
-            method_or_class = args.pop(0)
+            method_self = args.pop(0)
         else:
-            method_or_class = None
+            method_self = None
 
         # A Django view is passed an HttpRequest a the first arg
         request = args[0]  # @UnusedVariable
+        assert isinstance(request, HttpRequest), "ConnectedView: Requires an HttpRequest as it's first argument"
         
         # We need an Interactive Task as well which provides the connection information we need
         # We accept this as a kwarg or as a second arg.
         task = kwargs.get("task", args[1] if len(args)>1 else None)
+        assert isinstance(task, Celery_Task), "ConnectedView: Requires a Task as it's first argument"
         
-        assert task, "Attempt to connect view without providing an Interactive Task - Needed for connection details."
-        
-        log.debug(f'Connected View: {self.view_function.__name__}')
+        log.debug(f'Connected View, decorating function: {self.view_function.__name__}')
 
         log.debug(f'\tGot {len(args)} args:')
         for v in args:
@@ -99,8 +128,9 @@ class ConnectedView:
             log.debug(f'\t\t{k}: {v}')
         
         with InteractiveConnection(task) as conn:  # @UnusedVariable
-            if method_or_class:
-                args.insert(0,method_or_class)
+            if method_self:
+                # Put the decorated method self back as first argument
+                args.insert(0,method_self)
                 
             result = self.view_function(*args, **kwargs)
                      
@@ -150,9 +180,6 @@ class PulseCheckView:
             host_url = request._current_scheme_host
             if not isURL(template) or template.starts_with(host_url):
                 response["response_key"] = store_response
-                
-            request.session[store_response] = response
-            log.debug(f"Request that the AJAX caller send a page request for {request.get_full_path()} with template={template} and a context of {response}.")
         
         task_name = task.name
         task_id = task.request.id
@@ -204,6 +231,8 @@ class PulseCheckView:
             store_is_waiting_on = f"task_{task.name}_{task.request.id}_is_waiting_on"
             store_response  = f"task_{task.name}_{task.request.id}_response"
 
+            template = None
+            
             ####################################################################
             # First up this is a page request and not an AJAX call, with a 
             # template requested then let's cut to the chase and honor that.
@@ -226,16 +255,34 @@ class PulseCheckView:
             # Now we know have a running task with an id and state and can 
             # send it any instructions we've been asked to and check it's 
             # state and act on that.
+            #
+            # We only check general instructions and abort/cancle instructions 
+            # here before we check task state, because only those we expect from
+            # can be delivered from a progress monitor.
+            #
+            # The continue, commit and rollback instructions we only expect after 
+            # a WAITING state which put the question to a user and they have come 
+            # back. These are checked below if we are waiting.
 
             # If we received an (arbitrary) instruction in the request parameters, 
             # send it to the running task.
             if instruction:
                 task.instruct(instruction)
                 response["instructed"] = instruction
-                log.debug(f"Instructed task to abort: {task.fullname}")
-                # Instruction sent to the task. 
-                # TODO: Add a new state INSTRUCTED which the task can respond with 
-                # once it's done the instruction.
+                log.debug(f"Instructed task to '{instruction}': {task.fullname}")
+                # Instruction sent to the task, it will respond with state of "INSTRUCTED"
+                # on this or a subsequent pulse check. Below we will let the monitor know it 
+                # got the instruction and whether we want it to call back for a page defined by 
+                #    task.django.templates.instructed
+                # Note that:
+                #    task.instruction_response_continue
+                #    task.instruction_response_redirect
+                #    task.instruction_response_default
+                #
+                # determine behaviour below. 
+                if self.wait_for_instructed:
+                    time.sleep(self.wait_for_instructed)
+                
 
             # if we received a request to abort or cancel the task in the request parameters
             # send it on to the running task.
@@ -244,9 +291,10 @@ class PulseCheckView:
                 log.debug(f"Asked task to abort: {task.fullname}")
                 # Instruction to abort sent tot he task, it will respond with state of "ABORTED"
                 # on this or a subsequent pulse check. Below we will let the monitor know it 
-                # aborted and whther we want it to call back fro a page defined by 
+                # aborted and whether we want it to call back for a page defined by 
                 # task.django.templates.aborted
-                # TODO consider adding a configurable sleep time here.
+                if self.wait_for_abort:
+                    time.sleep(self.wait_for_abort)
             
             # task.state is a string and constrained to be:
             # "PENDING" - The task is waiting for execution.
@@ -255,11 +303,17 @@ class PulseCheckView:
             # "FAILURE" - The task raised an exception, or has exceeded the retry limit.  The result attribute then contains the exception raised by the task.
             # "SUCCESS" - The task executed successfully. The result attribute then contains the tasks return value.
             #
-            # Custom states introduced here:
-            # "PROGRESS" - The task is running
-            # "ABORTED" - The task was cancelled 
-            # "WAITING" - The task is waiting for an instruction 
-            # "QUEUE"   - The task is informing us of a Queue Name to use to send it instructions
+            # THose are the Celert standard states. Interactive task also use these 
+            # custom states:    
+            # "CONTEXT"    - THe task is sending some celery context before it's even started (not really used yet)
+            # "PROGRESS"   - The task is running
+            # "WAITING"    - The task is waiting for an instruction 
+            # "INSTRUCTED" - The task acknowledges receipt of an instruction 
+            # "ABORTED"    - The task  acknowledges that it is aborting
+            # "KILLED"     - The task called self.die_cleanly() which it will do if receives a DIE_CLEANLY instruction.
+            # "ROLLEDBACK" - The task acknowledges receiving a rlolback instruction and that it rolled back a trasnaction. 
+            # "COMMITTED"  - The task shoudl send this when it commits a transaction (presumeably having asked first)
+            
             #
             # See: https://docs.celeryproject.org/en/latest/reference/celery.result.html
             #      https://www.distributedpython.com/2018/09/28/celery-task-states/      
@@ -376,61 +430,92 @@ class PulseCheckView:
                     
                     log.debug(f'PENDING: {response["progress"]}')
                     
-                elif task.state in ["ABORTED", "ROLLEDBACK"]:
-                    # If the task received an instruction to ABORT or ROLLBACk it will update
-                    # state to tell us it did that! In which case again it is no longer WAITING
-                    # so if it was so we clear that from session store, and can return and a page
-                    # defined by a configured template. We can do this because we're no longer
-                    # monitoring.                 
-                    winfo = request.session.pop(store_is_waiting_on, {})
-                    response['canceled'] = True
+                elif task.state in ["ABORTED", "ROLLEDBACK", "COMMITTED", "INSTRUCTED"]:
+                    # If the task is acknowedging an instruction we generally just 
+                    # want to trickle that up the line now to the user somehow.
+                    # There are two options eitehr we continue monitoring or we
+                    # redirect to some other page.
+                    #
+                    # We will continue monitoring if asked to, and if the repsons
+                    # has a request we use that else check to see if we were waiting
+                    # and the wait contained a request.
+                    if r.info and isinstance(r.info, dict) and "continue_monitoring" in r.info:
+                        continue_monitoring = r.info["continue_monitoring"]
+                    else:
+                        winfo = request.session.pop(store_is_waiting_on, {})
+                        continue_monitoring = winfo.get("continue_monitoring", None)
+                            
                     response["progress"] = r.info.get('progress', request.session.get(store_last_progress, task.progress.as_dict()))
                     
                     if task.state == "ABORTED":
                         template = task.django.templates.aborted
+                        response['canceled'] = True
                         # Aborting the task precludes any continuation or need to monitor such.  
                         continue_monitoring = False
+                    
                     elif task.state == "ROLLEDBACK":
                         template = task.django.templates.rolledback
-                        # Rolling back a task might abort the task (for a task managing a single 
-                        # database transaction) or it might want to continue. Only the task knows
-                        # and it informs us when it goes into the wait whether it wants to continue
-                        # monitoring or not and that is stored in session so we don't forget.
-                        continue_monitoring = winfo.get('continue_monitoring', False)
+
+                        response["rolledback"] = True
+                        event = "Rollback complete"
+                    
+                    elif task.state == "COMMITTED":
+                        template = task.django.templates.committed
+
+                        response["committed"] = True
+                        event = "Commit complete"                    
+                    
+                    elif task.state == "INSTRUCTED":
+                        instruction = r.info.get('instruction', None)
+                        assert instruction, "Task state INSTRUCTED mandates an instruction." 
+                        
+                        # INSTRUCTED is a state we only need to act on if it's not the mundane
+                        # acknowledgment of a please_continue instruction.
+                        if not (please_continue and instruction == self.CONTINUE):
+                            response["instructed"] = instruction
+                        
+                            # Continue_monitoring is defined by config for the instruction
+                            # But we can fall back on the requests above if the configs don't stipulate a value
+                            if instruction in task.instruction_response_redirect or task.instruction_response_default == "redirect":
+                                template = task.django.templates.instructed
+                                continue_monitoring = False
+                                
+                            elif instruction in task.instruction_response_continue or task.instruction_response_default == "continue":
+                                continue_monitoring = True
+                                event = "Instruction acknowledged"
+                        else:
+                                event = "Task continues"
                      
                     log.debug(f'{task.state}: Template: {template}, continue_monitoring: {continue_monitoring}')
     
                     if continue_monitoring:
-                        # We have reload the monitor if it's not how we got here. 
                         if not deliver_json:
-                            log.debug(f"Rollback complete, continue monitoring with {task.django.templates.confirm}: {response}")
+                            # We have reload the monitor if it's not how we got here. 
+                            log.debug(f"{event}, continue monitoring with {task.django.templates.confirm}: {response}")
                             template = loader.get_template(task.django.templates.monitor)
                             return HttpResponse(template.render(response, request))
                         else:
-                            log.debug(f"Rollback complete, continue monitoring, returns to AJAX caller this data: {response}")
+                            log.debug(f"{event}, continue monitoring, returns to AJAX caller this data: {response}")
                             
-                    else:
-                        response['result'] =  str(r.info.get('result', ''))
-    
+                    else:   
                         if not deliver_json:
                             # If we cannot deliver JSON we need a template defined. It's a critical error
                             # if one isn't and we can't find one.
                             log.debug(f"Return page: {template}, with context: {response}")
                             
-                            template = loader.get_template(template)
+                            template = loader.get_template(template)                            
                             # Provide the response as context to the template
                             return HttpResponse(template.render(response, request))
                         
                         elif template:
                             # If we must deliver JSON and there is a template defined, we respond
                             # with JSON that asks the monitor to redirect here with a page request.
-                            response["k"] = template
-                            request.session[store_response] = response
-                            log.debug(f"Request that the AJAX caller send a page request for {request.get_full_path()} with template={template} and a context of {response}.")
+                            request_page(request, template, response)
                             
                         else:
                             # If we must deliver JSON and don't have a template it means we are content for the monitor to
-                            # notify about therollback. It will know from the result in the response.
+                            # inform the user about the acknolegement received. It will know from the progress.result in 
+                            # the response and from "canceled", "rolledback", "committed" or "instructed" in the response.
                             log.debug(f"Return to AJAX caller the data: {response}")
                     
                 elif task.state == "FAILURE":
@@ -439,7 +524,7 @@ class PulseCheckView:
                     # can fall back to a JSON response to the pulse checker (monitor) that got us here.
                     #
                     # TODO: Add a template option for error reporting. So we end up with same options as
-                    #       for rollbacks above. In fact this block cna merger with that one.
+                    #       for rollbacks above. In fact this block can merger with that one.
                     request.session.pop(store_is_waiting_on, None)
                     response["failed"] = True
                     # result=info=meta, so if FAILURE writes error message to result we have no info that contains progress
@@ -449,7 +534,7 @@ class PulseCheckView:
                     progress["status"] = "Error"
                     progress["result"] = str(r.result)  # Contains the error
                     response["progress"] = progress 
-                    log.debug(f"FAILURE: Return to AJAX caller the data: {response}")                    
+                    log.debug(f"FAILURE: Return to AJAX caller the data: {response}")
                     
                 elif task.state == "SUCCESS":
                     # When the task is complete it will return the "SUCCESS" status and
@@ -541,7 +626,7 @@ class PulseCheckView:
                                 log.debug(f"Asked task to continue.")
     
                             elif please_commit:
-                                # Implies postive_URL was requested in resposne fo ASK_COMMIT. 
+                                # Implies postive_URL was requested in response fo ASK_COMMIT. 
                                 # So we let the task know that it should commit the transaction
                                 task.please_commit()
                                 template = task.django.templates.committed
@@ -674,6 +759,16 @@ class PulseCheckView:
                     response[k] = v
         elif contrib:
             raise Exception("Configuration error: Django Pulse Check decorator wraps view function that does not return a dict.")
+
+
+        # If awe are requ4esting redirect back to a page that is alsy being delivered the reponse_key
+        # We store the response with that key, now that it is complete.
+        if "request_page" in response and "response_key" in response:
+            request.session[store_response] = response
+            
+            template = response["request_page"]
+            URL = template if isURL(template) else f"{request.get_full_path()} with template={template}"
+            log.debug(f"Request that the AJAX caller send a page request for {URL} and a context of {response}.")
           
         # Return the dictionary as JSON string (intended to be used 
         # in Javascript at the client side, to drive a progress bar
@@ -687,21 +782,21 @@ class PulseCheckView:
         Replaces a django view function that has the same signature.
         
         Requires a task_name and optionally a task_id (of an already 
-        started task) in request. Optionally the `cancel` keyword in the request 
+        started task) in request or kwards. Optionally the `cancel` keyword in the request 
         if a task_id is provided will ask that task to abort and the 'instruction'
         keyword in the request can request that we instruct the task as suggested. 
 
-        Warning: if not task_id is provided in request this will start a task. This
-        can lead to multiple task initiations if a Pulse Checking view fails to 
-        provide a task_id!
+        Warning: if no task_id is provided in kwargs or request this will start a 
+        task. This can lead to multiple task initiations if a Pulse Checking view  
+        fails to provide a task_id!
 
         :param request:   An HTTP request which optionally provides `task_id` and `abort`
                           This must be the first or second arg. 
                           
-        :param task_name: A string that identifies a registered celery task. Accepted
+        :param task_name: A kwarg - a string that identifies a registered celery task. Accepted
                           only as a kwarg or in the request (i.e. not as an arg)
 
-        :param task_id: Optionally a task ID as a UUID or sting that identifies a 
+        :param task_id: An optional kwarg - a task ID as a UUID or sting that identifies a 
                         running celery task. Accepted only as a kwarg or in the 
                         request (i.e. not as an arg)
         '''
@@ -721,15 +816,16 @@ class PulseCheckView:
         # first argument will NOT be self. We expect the first argument of a Django 
         # view to be HttpRequest instance. So if the second argument is an HttpRequest
         # we can infer that self was passed as arg[0].
+        args = list(args)
         if len(args) > 1 and isinstance(args[1], HttpRequest):
-            # TODO: test that this actually happens.
-            args = list(args)
             self = args.pop(0)
         
-        # A Django view is passed an HttpRequest a the first arg
-        request = args[0]
+        assert isinstance(args[0], HttpRequest), "A PulseCheckView decorated function must have an HttpRequest as its first argument."
         
-        # A Django view revieves named URL parameters as kwargs
+        # A Django view is passed an HttpRequest a the first arg
+        request = args.pop(0)
+        
+        # A Django view recieves named URL parameters as kwargs
         #
         # We expect the task name and id to be passed as kwargs 
         # to the view in this manner. But if they are not we're 
@@ -739,9 +835,10 @@ class PulseCheckView:
         # task_id is optional, if not provided we'll start a task
         # running, but if it's provided we'll check the pulse on the
         # running task of that ID. The id might arrrive as a UUID and
-        #  we need it as a string not a UUI object.
+        #  we need it as a string not a UUID object.
         task_name = kwargs.pop("task_name", args[0] if len(args)>0 else get_request_param(request, "task_name"))
-        task_id = str(kwargs.pop("task_id", args[1] if len(args)>1 else get_request_param(request, "task_id")))
+        task_id = kwargs.pop("task_id", args[1] if len(args)>1 else get_request_param(request, "task_id"))
+        if task_id: task_id = str(task_id)
         
         if not task_name:
             raise Exception(f"{self.__name__}: NO task_name provided")

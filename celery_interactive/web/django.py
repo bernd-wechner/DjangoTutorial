@@ -2,12 +2,13 @@ from django.apps import apps
 from django.template import loader
 from django.forms.models import modelform_factory
 from django.http.response import HttpResponse
+from django.http.request import QueryDict
 
 from .. import log
 from ..tasks.celery import Task
 from ..decorators import django
 
-import time
+import json
 
 class Django:
     '''
@@ -107,15 +108,16 @@ class Django:
 
     def __start__(self, request, form):
         packed_form = self.task.django.pack_form(request, form)
-        log.debug(f"Starting tast with packed form {packed_form}")
+        log.debug(f"Starting tast with packed form {json.dumps(packed_form, indent=4)}")
         result = self.task.start(form=packed_form)
         log.debug(f"Task is started with id: {result.task_id}")
         return result.task_id
 
     def __monitor__(self, response, request):
-        log.debug(f"Loading template {self.task.django.templates.monitor}")
+        log.debug(f"Loading template '{self.task.django.templates.monitor}'")
         template = loader.get_template(self.task.django.templates.monitor)
         response["title"] = self.task.monitor_title if self.task.monitor_title else "<No Title Provided>"
+        log.debug(f"Loaded template '{template.origin.name}'")
         log.debug(f"Rendering template with context {response}")
         return HttpResponse(template.render(response, request))
 
@@ -123,7 +125,15 @@ class Django:
         log.debug(f"Starting {self.task.name}")
         self.task.request.id = self.task.django.start(request, form)
         log.debug(f"Started {self.task.name}, starting Monitor")
-        response = {'name':      self.task.name, 
+
+        # This attribute means we can include tasks in Django contexts and the context
+        # handler will work properly. It tries to call callables (and Task is a callable 
+        # class (has an __call__ attribute), and in so doing actually prevents us accessing
+        # the class properties. By preventing this call, we can access the class properties
+        # here in a template if the task is included in the template. 
+        self.task.do_not_call_in_templates = True
+        response = {'task':      self.task,
+                    'name':      self.task.name, 
                     'shortname': self.task.shortname, 
                     'id':        self.task.request.id, 
                     'result':    None}
@@ -155,7 +165,12 @@ class Django:
         post = packed_form["post"]
         Model = apps.get_model(app_label=model_app, model_name=model_name)
         Form = modelform_factory(Model, fields=form_fields)
-        form = Form(post)
+
+        # We need a QueryDict to initialise the Form with
+        qd = QueryDict('', mutable=True)
+        qd.update(post)
+        form = Form(qd)
+        
         return form
 
     # Reconfigurable hooks to default packer and unpacker
@@ -199,8 +214,9 @@ class Django:
         aborted = "aborted.html"
         committed = "committed.html"
         rolledback = "rolledback.html"
+        instructed = "instructed.html"
+                
         #TODO: configurable templates for Instructed, Failed and Success
-        instructed = None
         failed = None
         success = None
     
@@ -215,15 +231,15 @@ class Django:
         view with Django_PulseCheck.
          
         :param request:   A Django request object, as Django provides to view functinos
-        :param task_name: The name of a task, that Django provides as a kwarg from the 
-                          urlpatterns. That is, you need to invoke this view with 
-                          something like:
+        :param task_name: (in kwargs). The name of a task, that Django provides as a  
+                          kwarg from the urlpatterns. That is, you need to invoke this  
+                          view with something like:
                            
                           urlpatterns += [
                               path('progress/<task_name>', Interactive.Django.Progress)
                           ]
                            
-                          so that DJango provides task_name as a kwarg to this view function.
+                          so that Django provides task_name as a kwarg to this view function.
         '''
         pass
 

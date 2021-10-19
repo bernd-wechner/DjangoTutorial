@@ -2,7 +2,7 @@ from django.urls import path
 from django.contrib import admin
 from django.conf import settings
 from django.conf.urls.static import static
-from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, TransactionManaged_BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView
+from Library.views import AuthorDetailView, AuthorListView, BookDetailView, BookCreate, TransactionManaged_BookCreate, BookUpdateView, BookListView, ArticleDetailView, ArticleListView, TimeTestView, CeleryTestView, CeleryInteractiveTestView
 from Library.forms import AuthorCreate, AuthorDelete, AuthorUpdate, BookDelete, manage_books
 from celery_interactive import Interactive
 
@@ -24,19 +24,22 @@ urlpatterns = [
     path('book/<int:pk>/', BookDetailView.as_view(), name='book-detail'),
     path('book/', BookListView.as_view(), name='book-list'),
 
+    # Transaction Managed URLs
     path('book/ADD/', TransactionManaged_BookCreate.as_view(), name='tm-book-add'),
     path('book/ADD/save', TransactionManaged_BookCreate.form_commit, name='tm-book-add-save'),
     path('book/ADD/save/pulse', interactive.django.pulse_check, {'task_name': 'add_book'}, name='tm-book-add-save-pulse'),
 
     path('timetest/', TimeTestView, name='time-test'),
+    
     path('celerytest/', CeleryTestView, name='celery-test'),
     
-#     path('test/<task_name>/', CeleryInteractiveTestView.as_view(), name='task-test'),
-#     path('tell/<task_name>/', interactive.Django.Instruct, name='task-tell'),
-#     path('pulse/<task_name>', interactive.Django.Pulse, name='task-pulse'),
+    path('test/<task_name>/', CeleryInteractiveTestView.as_view(), name='task-test'),
+    path('tell/<task_name>/', interactive.Django.instruct, name='task-tell'),
+    path('pulse/<task_name>', interactive.Django.pulse_check, name='task-pulse'),
     
     path('article/<slug:slug>/', ArticleDetailView.as_view(), name='article-detail'),
     path('article/', ArticleListView.as_view(), name='article-list'),
         
-    path(r'admin/', admin.site.urls),   
+    # Admin site by default (no home page here)
+    path(r'', admin.site.urls),   
 ] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

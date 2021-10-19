@@ -1,22 +1,4 @@
 # -*- coding: utf-8 -*-
-#
-# TODO: Need to establish the life to states wit an rpc backend
-#       There seems to be some overwriting, i.e. consuming of 
-#       messages by someone otehr than us? Really. Confirm this 
-#       hypthesis or not. Do we need a new queue as our ow task 
-#       feedback queue? TO ensure no-one consumes messages on it?
-#
-#        https://docs.celeryproject.org/en/stable/userguide/tasks.html#states
-#
-#        "When a task moves into a new state the previous state 
-#        is forgotten about, but some transitions can be deduced, 
-#        (e.g., a task now in the FAILED state, is implied to have 
-#        been in the STARTED state at some point)."
-#
-#        Ouch. Sugegsts a rewrite moving away fromuse fo states
-#        to provide Ack messages for messages sent to the task.
-#        How does Ack in AMQP work? Is supect it's jjust "message
-#        consumed". We want ack for "did the thing you asked for".
 
 """Interactive Tasks.
 
@@ -268,11 +250,9 @@ log = logging.getLogger(__package__)
 # The default Interactive class (based on kombu communications between Task/Client and Task/Worker)
 # Specifically subclassed here so that a different communications class can be easily hooked in if
 # ever desired. Given Kombu is the way Celery communications it's hard to imagine justifying a different
-# communications tool than Kombu, but the option is there with all Kombu specific.
-#
-# Kombu   
- 
-from celery_interactive.tasks import kombu 
+# communications tool than Kombu, but the option is there.
+
+from .tasks import kombu 
 class Interactive(kombu.InteractiveKombu):
     pass
 

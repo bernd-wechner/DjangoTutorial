@@ -13,9 +13,10 @@
 	<button onclick='PC.instruct("instruction");'>Instruct:</button>
 	<input type="text" id="instruction" name="instruction" value="echo">
 	
+	<div id='pulse-check-status'></div>
+	<div id='pulse-check-stage-bar'>&nbsp;</div>
+	<div id='pulse-check-step-bar'>&nbsp;</div>
 	<div id="pulse-check-result"></div>
-	<div id='progress-bar'>&nbsp;</div>
-	<div id='pulse-check-message'></div>
 </body>
 	
 <script>PC = new PulseChecker("{% url 'task-pulse' view.task %}", {progressBar: true})</script> 

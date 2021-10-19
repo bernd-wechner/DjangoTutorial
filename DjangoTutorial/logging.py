@@ -2,8 +2,9 @@
 Logging utilities
 '''
 from time import time
-import logging, re
-from re import RegexFlag as ref # Specifically to avoid a PyDev Error in the IDE.
+
+import logging, re, os
+from re import RegexFlag
 
 log = logging.getLogger('default')
 
@@ -30,7 +31,7 @@ class RelativeFilter(logging.Filter):
     # but a formatter like:
     #     '%(prefix)s other stuff %(message)s% other stuff (postfix)s'
     # will wrap the whole log message in the prefix/postfix pair. 
-    RE = re.compile(r'^(?P<newlines1>\n*)(?P<message>.*?)(?P<newlines2>\n*)$', ref.DOTALL)
+    RE = re.compile(r'^(?P<newlines1>\n*)(?P<message>.*?)(?P<newlines2>\n*)$', RegexFlag.DOTALL)
     
     def filter(self, record):
         now = time()
@@ -42,6 +43,7 @@ class RelativeFilter(logging.Filter):
 
         matches = self.RE.match(record.msg).groupdict()
 
+        record.PID = os.getpid()
         record.relativeReference = now - self.time_reference
         record.relativeLast = now - self.time_last
         record.prefix = matches['newlines1']

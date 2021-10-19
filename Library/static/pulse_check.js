@@ -2,7 +2,7 @@
 /* A Pulse Checker for Celery Interactive tasks.
  * 
  * Instantiate PulseChecker with an AJAX URL that must respond with a
- * A JSON data structure bebiug the pulse of the task.
+ * A JSON data structure being the pulse of the task.
  * 
  * Based on a simple progress bar that was pilfered shamelessly from:
  * https://github.com/czue/celery-progress/blob/master/celery_progress/static/celery_progress/celery_progress.js
@@ -33,14 +33,14 @@ class PulseChecker {
     	
         options = options || {};        
 
-        this.taskId 		  = options.taskId   || null;				        
+        this.taskId 		  = options.taskId   || null;
 		this.stepBar          = options.stepBar  || false;
 		this.stageBar         = options.stageBar || false;
 		
 		// If true status text will be prefixed with a default progress string.  
 		this.prefixStatus     = options.prefixStatus     || false;
 
-		// If true requests we hand confirmations here, else we let the server decide.
+		// If true requests we handle confirmations here, else we let the server decide.
 		//
 		// If we wish to own confirmations we expect an AJAX response that 
 		// supplies a positive_lbl, negative_lbl, positive_URL and negative_URL
@@ -239,7 +239,7 @@ class PulseChecker {
 	        	// update last.
 		    	if (data.progress && !(data.waiting && data.confirm)) {
 		    		const percent = 100 * data.progress.step / data.progress.steps;
-		        	console.log("Rendering Progress: " + percent);
+		        	console.log("Rendering Progress: " + percent + "%");
 		            this.onProgress(elements, labels, data.progress);
 		        }
 	        	
@@ -254,8 +254,8 @@ class PulseChecker {
 		        	// 		negative_lbl, negative_URL
 		        	// to help. We will need to have two buttons to dress up and display
 		        	// TODO: implement this.
-		        	// Ideal onw_Confirmations is not bool, but a list of two buttons by id 
-		        	// or element. Of if just a bool use default names. 
+		        	// Ideally this.ownConfirmations is not bool, but a list of two buttons by id 
+		        	// or elements. Of if just a bool use default names. 
 		    		const result = data.progress.result || ""; 
 			    	console.log("Waiting.");
 		    		this.onWait(elements, labels, result, data.prompt);
@@ -278,12 +278,11 @@ class PulseChecker {
 		            this.taskId = null;
 		        }
 		        
-		        else if (data.instructed) {
-		        	clearTimeout(this.timerID);
-		        	console.log("Instructed: " + data.instructed);
-		        } 
-		        
 		        else {
+			        if (data.instructed) {
+			        	console.log("Instructed: " + data.instructed);
+			        } 
+
 		        	// setTimeout is vanilla JS and calls pollURL after pollInterval
 		        	// setTimeout(function, milliseconds, param1, param2, ...)
 		        	// where param's are passed to function
@@ -320,7 +319,7 @@ class PulseChecker {
 	    								 : '.');
 	    								         
 	        const status = this.prefixStatus && progress.status 
-	        					? default_status + progress.status
+	        					? default_status + " "+ progress.status
 	        					: progress.status 
 	        						? progress.status
 	        						: default_status;

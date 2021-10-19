@@ -4,8 +4,10 @@ from celery import Celery
 #from celery.utils.log import get_logger
 import os
 import time
+import json
 
 from celery_interactive import Interactive
+from celery.exceptions import Ignore
 from django.db import transaction
 
 # set the default Django settings module for the 'celery' program.
@@ -103,23 +105,25 @@ def add_book(self, *args, **kwargs):
     '''
     A transaction manager for adding books. Testing Celery Interactive.
     '''
+    self.send_update(state="STARTING")
+
     step_sleep = 0.5
     
-    log.info(f'Starting with {args} and {kwargs}')
-    log.info(f'Packed Form: {kwargs["form"]}')
+    packed_form = kwargs.get("form", {})
     
-    form = self.django.unpack_form(kwargs["form"])
-
+    log.info(f'Starting with {args} and {kwargs}')
+    log.info(f'Packed Form: {json.dumps(packed_form, indent=4)}')
+    
+    form = self.django.unpack_form(packed_form)
+    
     if form.is_valid():
         log.info(f'FORM is VALID')
     else:
         log.info(f'FORM is INVALID')
-        
-    for i, e in enumerate(form.errors):
-        log.info(f'ERROR: {i} {e}')
-
-    self.send_update(state="STARTING")
-   
+        for i, e in enumerate(form.errors):
+            log.info(f'ERROR: {i} {e}')
+        self.bail_with_fail(reason="Form Errors", form_errors=form.errors) # Does not return (raises an exception)
+  
     n = 10
 
     self.progress.configure(n, 3)

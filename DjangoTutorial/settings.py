@@ -145,7 +145,7 @@ CELERY_RESULT_EXTENDED = True
 # Configure logging
 from .logging import RelativeFilter
 
-log_format = '%(prefix)s%(relativeReference)9.4f, %(relativeLast)9.4f, %(filename)20s:%(lineno)4d, %(funcName)20s - %(message)s%(postfix)s'
+log_format = '%(prefix)s%(relativeReference)9.4f, %(relativeLast)9.4f,%(PID)7d, %(filename)20s:%(lineno)4d, %(funcName)25s - %(message)s%(postfix)s'
 
 LOGGING = {
     'version': 1,
